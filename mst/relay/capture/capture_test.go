@@ -212,6 +212,141 @@ func TestCaptureMissingTimestampQuarantined(t *testing.T) {
 	}
 }
 
+func TestCaptureAllModeAnchorsEveryValidTx(t *testing.T) {
+	store := openStore(t)
+	payload := validPayload(t)
+
+	block := &txmodel.Block{Number: 4, Txs: []txmodel.Tx{
+		// Plain business tx, NO event -> captured with the empty payload hash.
+		{TxID: txID("a1"), ChannelID: "mychannel", ChaincodeID: "assets", TimestampUnix: 1720000001, Valid: true},
+		// Opted-in tx -> captured with its declared payload, as in opt-in mode.
+		optedTx("a2", 1720000002, true, "mst-example", payload),
+		// Invalid tx -> still skipped.
+		{TxID: txID("a3"), ChannelID: "mychannel", ChaincodeID: "assets", TimestampUnix: 1720000003, Valid: false},
+		// Excluded (write-back) chaincode -> skipped, even without an event.
+		{TxID: txID("a4"), ChannelID: "mychannel", ChaincodeID: "mst-anchor-status", TimestampUnix: 1720000004, Valid: true},
+		// System chaincode -> skipped.
+		{TxID: txID("a5"), ChannelID: "mychannel", ChaincodeID: "_lifecycle", TimestampUnix: 1720000005, Valid: true},
+		// No decodable chaincode id -> skipped (nothing to attribute to).
+		{TxID: txID("a6"), ChannelID: "mychannel", TimestampUnix: 1720000006, Valid: true},
+	}}
+
+	svc := New(nil, store, Config{Mode: ModeAll, ExcludeChaincodes: []string{"mst-anchor-status"}}, nil)
+	if err := svc.ProcessBlock(block); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := store.ListByStatus(outbox.StatusPending, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("want 2 captured (a1 empty-payload, a2 declared), got %d", len(pending))
+	}
+
+	// The non-opted tx commits to the tuple with the EMPTY payload hash.
+	var id1 [32]byte
+	raw, _ := hex.DecodeString(txID("a1"))
+	copy(id1[:], raw)
+	emptyEnc, err := canonical.Encode(canonical.Payload{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCommitment := canonical.NewCommitment(id1, "mychannel", "assets", 4, 1720000001,
+		canonical.Keccak256(emptyEnc))
+	want, err := wantCommitment.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(id1)
+	if err != nil || got == nil {
+		t.Fatalf("a1: %v %v", got, err)
+	}
+	if got.Commitment != want {
+		t.Fatalf("empty-payload commitment mismatch:\n want %x\n  got %x", want, got.Commitment)
+	}
+	if got.ChaincodeID != "assets" {
+		t.Fatalf("chaincode attribution: %q", got.ChaincodeID)
+	}
+
+	// The opted-in tx keeps its declared-payload commitment.
+	var id2 [32]byte
+	raw, _ = hex.DecodeString(txID("a2"))
+	copy(id2[:], raw)
+	declaredCommitment := canonical.NewCommitment(id2, "mychannel", "mst-example", 4, 1720000002,
+		canonical.Keccak256(payload))
+	wantDeclared, err := declaredCommitment.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := store.Get(id2)
+	if err != nil || got2 == nil {
+		t.Fatalf("a2: %v %v", got2, err)
+	}
+	if got2.Commitment != wantDeclared {
+		t.Fatal("opted-in tx must keep its declared payload in all mode")
+	}
+}
+
+func TestCaptureAllModeIncludeAllowlist(t *testing.T) {
+	store := openStore(t)
+	block := &txmodel.Block{Number: 1, Txs: []txmodel.Tx{
+		{TxID: txID("b1"), ChannelID: "ch", ChaincodeID: "assets", TimestampUnix: 1720000001, Valid: true},
+		{TxID: txID("b2"), ChannelID: "ch", ChaincodeID: "other", TimestampUnix: 1720000002, Valid: true},
+	}}
+	svc := New(nil, store, Config{Mode: ModeAll, IncludeChaincodes: []string{"assets"}}, nil)
+	if err := svc.ProcessBlock(block); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.ListByStatus(outbox.StatusPending, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ChaincodeID != "assets" {
+		t.Fatalf("allowlist must admit only 'assets': %+v", pending)
+	}
+}
+
+func TestCaptureOptInModeIgnoresEventlessTx(t *testing.T) {
+	store := openStore(t)
+	block := &txmodel.Block{Number: 1, Txs: []txmodel.Tx{
+		{TxID: txID("c1"), ChannelID: "ch", ChaincodeID: "assets", TimestampUnix: 1720000001, Valid: true},
+	}}
+	svc := New(nil, store, Config{}, nil) // default opt-in
+	if err := svc.ProcessBlock(block); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.ListByStatus(outbox.StatusPending, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatal("opt-in mode must not capture eventless transactions")
+	}
+}
+
+func TestCaptureModeValidation(t *testing.T) {
+	for _, tc := range []struct {
+		in   Mode
+		ok   bool
+		want Mode
+	}{
+		{"", true, ModeOptIn},
+		{ModeOptIn, true, ModeOptIn},
+		{ModeAll, true, ModeAll},
+		{"everything", false, "everything"},
+	} {
+		m := tc.in
+		err := m.Validate()
+		if tc.ok && (err != nil || m != tc.want) {
+			t.Fatalf("%q: err=%v mode=%q", tc.in, err, m)
+		}
+		if !tc.ok && err == nil {
+			t.Fatalf("%q: expected validation error", tc.in)
+		}
+	}
+}
+
 func TestCaptureContextCancelIsCleanShutdown(t *testing.T) {
 	store := openStore(t)
 	svc := New(&StaticSource{}, store, Config{}, nil)

@@ -91,24 +91,27 @@ func parseEnvelope(envelopeBytes []byte) (*txmodel.Tx, bool, error) {
 		tx.TimestampUnix = uint64(ts.GetSeconds())
 	}
 
-	events, err := readChaincodeEvents(payload.GetData())
+	chaincodeID, events, err := readActions(payload.GetData())
 	if err != nil {
 		return nil, false, err
 	}
+	tx.ChaincodeID = chaincodeID
 	tx.Events = events
 	return tx, true, nil
 }
 
-// readChaincodeEvents walks Transaction -> ChaincodeActionPayload ->
-// ProposalResponsePayload -> ChaincodeAction -> ChaincodeEvent. Individual
+// readActions walks Transaction -> ChaincodeActionPayload ->
+// ProposalResponsePayload -> ChaincodeAction, collecting the invoked
+// chaincode id (first action) and any chaincode events. Individual
 // undecodable actions are skipped, matching the peer's gateway behavior
 // (they are not endorser chaincode actions).
-func readChaincodeEvents(payloadData []byte) ([]txmodel.Event, error) {
+func readActions(payloadData []byte) (string, []txmodel.Event, error) {
 	transaction := &peer.Transaction{}
 	if err := proto.Unmarshal(payloadData, transaction); err != nil {
-		return nil, fmt.Errorf("unmarshal transaction: %w", err)
+		return "", nil, fmt.Errorf("unmarshal transaction: %w", err)
 	}
 
+	var chaincodeID string
 	var events []txmodel.Event
 	for _, action := range transaction.GetActions() {
 		actionPayload := &peer.ChaincodeActionPayload{}
@@ -123,6 +126,9 @@ func readChaincodeEvents(payloadData []byte) ([]txmodel.Event, error) {
 		if err := proto.Unmarshal(responsePayload.GetExtension(), chaincodeAction); err != nil {
 			continue
 		}
+		if chaincodeID == "" {
+			chaincodeID = chaincodeAction.GetChaincodeId().GetName()
+		}
 		event := &peer.ChaincodeEvent{}
 		if err := proto.Unmarshal(chaincodeAction.GetEvents(), event); err != nil {
 			continue
@@ -136,5 +142,5 @@ func readChaincodeEvents(payloadData []byte) ([]txmodel.Event, error) {
 			Payload:     event.GetPayload(),
 		})
 	}
-	return events, nil
+	return chaincodeID, events, nil
 }

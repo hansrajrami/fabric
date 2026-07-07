@@ -21,6 +21,11 @@ type Tx struct {
 	TxID          string
 	ChannelID     string
 	TimestampUnix uint64 // ChannelHeader.Timestamp (client-asserted, in the signed envelope)
+	// ChaincodeID is the invoked chaincode (from the first chaincode
+	// action), independent of whether the tx emitted any event. Needed by
+	// the anchor-all capture mode, where transactions without an
+	// MSTProofRequest event are anchored too.
+	ChaincodeID string
 	// Valid reports whether the transaction committed successfully
 	// (TxValidationCode == VALID in the block's TRANSACTIONS_FILTER).
 	Valid  bool

@@ -42,15 +42,22 @@ type File struct {
 	} `json:"outbox"`
 
 	Fabric struct {
-		Endpoint           string   `json:"endpoint"`
-		TLSCACertPath      string   `json:"tlsCACertPath"`
-		ServerNameOverride string   `json:"serverNameOverride"`
-		MSPID              string   `json:"mspID"`
-		CertPath           string   `json:"certPath"`
-		KeyPath            string   `json:"keyPath"`
-		Channel            string   `json:"channel"`
-		DefaultStartBlock  uint64   `json:"defaultStartBlock"`
-		ExcludeChaincodes  []string `json:"excludeChaincodes"`
+		Endpoint           string `json:"endpoint"`
+		TLSCACertPath      string `json:"tlsCACertPath"`
+		ServerNameOverride string `json:"serverNameOverride"`
+		MSPID              string `json:"mspID"`
+		CertPath           string `json:"certPath"`
+		KeyPath            string `json:"keyPath"`
+		Channel            string `json:"channel"`
+		DefaultStartBlock  uint64 `json:"defaultStartBlock"`
+		// CaptureMode: "opt-in" (default; only MSTProofRequest emitters) or
+		// "all" (every valid transaction; non-opted txs get the empty
+		// payload hash). Batch cadence is strongly advisable with "all".
+		CaptureMode       string   `json:"captureMode"`
+		ExcludeChaincodes []string `json:"excludeChaincodes"`
+		// IncludeChaincodes restricts captureMode "all" to these chaincodes
+		// (empty = every chaincode). Ignored in opt-in mode.
+		IncludeChaincodes []string `json:"includeChaincodes"`
 		// AnchorStatusChaincode is the write-back chaincode name. It is
 		// force-added to ExcludeChaincodes (echo-loop guard) and used by the
 		// write-back client.
@@ -116,6 +123,11 @@ func Load(path string) (*File, error) {
 	if f.Fabric.AnchorStatusChaincode != "" {
 		f.Fabric.ExcludeChaincodes = appendUnique(f.Fabric.ExcludeChaincodes, f.Fabric.AnchorStatusChaincode)
 	}
+	mode := capture.Mode(f.Fabric.CaptureMode)
+	if err := mode.Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	f.Fabric.CaptureMode = string(mode)
 	return &f, nil
 }
 
@@ -157,8 +169,10 @@ func (f *File) GatewayConfig() gwsource.Config {
 // CaptureConfig maps to the capture service configuration.
 func (f *File) CaptureConfig() capture.Config {
 	return capture.Config{
+		Mode:              capture.Mode(f.Fabric.CaptureMode),
 		DefaultStartBlock: f.Fabric.DefaultStartBlock,
 		ExcludeChaincodes: f.Fabric.ExcludeChaincodes,
+		IncludeChaincodes: f.Fabric.IncludeChaincodes,
 	}
 }
 

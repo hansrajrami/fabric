@@ -76,23 +76,27 @@ func parseEnvelope(envelopeBytes []byte) (*txmodel.Tx, bool, error) {
 		tx.TimestampUnix = uint64(ts.GetSeconds())
 	}
 
-	events, err := readChaincodeEvents(payload.GetData())
+	chaincodeID, events, err := readActions(payload.GetData())
 	if err != nil {
 		return nil, false, err
 	}
+	tx.ChaincodeID = chaincodeID
 	tx.Events = events
 	return tx, true, nil
 }
 
-// readChaincodeEvents mirrors the walk in the peer's own gateway event code
-// (internal/pkg/gateway/event/transaction.go): undecodable individual
-// actions are skipped, a malformed transaction envelope is an error.
-func readChaincodeEvents(payloadData []byte) ([]txmodel.Event, error) {
+// readActions mirrors the walk in the peer's own gateway event code
+// (internal/pkg/gateway/event/transaction.go), additionally collecting the
+// invoked chaincode id (first action) for the anchor-all capture mode:
+// undecodable individual actions are skipped, a malformed transaction
+// envelope is an error.
+func readActions(payloadData []byte) (string, []txmodel.Event, error) {
 	transaction, err := protoutil.UnmarshalTransaction(payloadData)
 	if err != nil {
-		return nil, fmt.Errorf("unmarshal transaction: %w", err)
+		return "", nil, fmt.Errorf("unmarshal transaction: %w", err)
 	}
 
+	var chaincodeID string
 	var events []txmodel.Event
 	for _, action := range transaction.GetActions() {
 		actionPayload, err := protoutil.UnmarshalChaincodeActionPayload(action.GetPayload())
@@ -107,6 +111,9 @@ func readChaincodeEvents(payloadData []byte) ([]txmodel.Event, error) {
 		if err != nil {
 			continue
 		}
+		if chaincodeID == "" {
+			chaincodeID = chaincodeAction.GetChaincodeId().GetName()
+		}
 		event, err := protoutil.UnmarshalChaincodeEvents(chaincodeAction.GetEvents())
 		if err != nil {
 			continue
@@ -120,5 +127,5 @@ func readChaincodeEvents(payloadData []byte) ([]txmodel.Event, error) {
 			Payload:     event.GetPayload(),
 		})
 	}
-	return events, nil
+	return chaincodeID, events, nil
 }

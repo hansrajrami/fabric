@@ -836,7 +836,22 @@ mst:
     channels: []
     # First block to capture when a channel has no checkpoint yet.
     defaultStartBlock: 0
-    # Chaincodes whose proof requests are ignored.
+    # What to anchor:
+    #   opt-in (default): only transactions whose chaincode emits the
+    #                     MSTProofRequest event, with their declared fields.
+    #   all:              EVERY valid transaction. Opted-in txs keep their
+    #                     declared payloads; all others are anchored with the
+    #                     empty payload hash (existence-and-timing proof,
+    #                     verifiable with mst-verify --payload-hex 0x00000000).
+    #                     Gas cost scales with channel traffic - use a batch
+    #                     cadence. System chaincodes (_lifecycle, lscc, cscc,
+    #                     qscc, vscc) and excluded chaincodes are never
+    #                     anchored.
+    captureMode: opt-in
+    # Restrict captureMode "all" to these chaincodes (empty = every
+    # chaincode). Ignored in opt-in mode.
+    includeChaincodes: []
+    # Chaincodes whose transactions/proof requests are ignored.
     excludeChaincodes: []
     # Write-back chaincode recording anchor status on Fabric. Requires the
     # embedded gateway (peer.gateway.enabled) and the writeback identity

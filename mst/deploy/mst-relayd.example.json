@@ -10,6 +10,8 @@
     "keyPath": "/etc/mst-relay/relayer-key.pem",
     "channel": "mychannel",
     "defaultStartBlock": 0,
+    "captureMode": "opt-in",
+    "includeChaincodes": [],
     "excludeChaincodes": [],
     "anchorStatusChaincode": "mst-anchor-status"
   },

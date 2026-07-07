@@ -15,10 +15,10 @@ import (
 
 // TxSpec describes one transaction to place in a synthetic block.
 type TxSpec struct {
-	TxID        string
-	ChannelID   string
-	Timestamp   int64
-	Valid       bool
+	TxID      string
+	ChannelID string
+	Timestamp int64
+	Valid     bool
 	// Event fields; EventName == "" means the tx emits no event.
 	ChaincodeID  string
 	EventName    string
@@ -73,6 +73,9 @@ func Build(t *testing.T, number uint64, specs ...TxSpec) *common.Block {
 			}
 		}
 		chaincodeAction := &peer.ChaincodeAction{}
+		if spec.ChaincodeID != "" {
+			chaincodeAction.ChaincodeId = &peer.ChaincodeID{Name: spec.ChaincodeID}
+		}
 		if event != nil {
 			chaincodeAction.Events = mustMarshal(t, event)
 		}

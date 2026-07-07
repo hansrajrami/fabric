@@ -56,6 +56,9 @@ func buildBlock(t *testing.T, number uint64, specs ...txSpec) *common.Block {
 		require.NoError(t, err)
 
 		var chaincodeAction peer.ChaincodeAction
+		if spec.chaincode != "" {
+			chaincodeAction.ChaincodeId = &peer.ChaincodeID{Name: spec.chaincode}
+		}
 		if spec.eventName != "" {
 			eventBytes, err := proto.Marshal(&peer.ChaincodeEvent{
 				ChaincodeId: spec.chaincode, TxId: spec.txID, EventName: spec.eventName, Payload: spec.payload,
@@ -126,6 +129,16 @@ func TestParseBlockExtractsEndorserTransactions(t *testing.T) {
 
 	require.False(t, parsed.Txs[1].Valid)
 	require.Empty(t, parsed.Txs[2].Events)
+}
+
+func TestParseBlockSurfacesInvokedChaincodeWithoutEvent(t *testing.T) {
+	block := buildBlock(t, 9,
+		txSpec{txID: testTxID("f1"), channel: "ch", ts: 1, valid: true, chaincode: "assets"},
+	)
+	parsed, err := ParseBlock(block)
+	require.NoError(t, err)
+	require.Equal(t, "assets", parsed.Txs[0].ChaincodeID)
+	require.Empty(t, parsed.Txs[0].Events)
 }
 
 func TestParseBlockSkipsNonEndorserEntries(t *testing.T) {

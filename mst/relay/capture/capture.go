@@ -28,16 +28,66 @@ type Source interface {
 	Blocks(ctx context.Context, startBlock uint64) (<-chan *txmodel.Block, error)
 }
 
+// Mode selects which transactions are anchored.
+type Mode string
+
+const (
+	// ModeOptIn (default) anchors only transactions that emitted the
+	// MSTProofRequest event — the chaincode chooses, per transaction, and
+	// declares which fields the proof covers.
+	ModeOptIn Mode = "opt-in"
+	// ModeAll anchors EVERY valid endorser transaction. Opted-in
+	// transactions keep their declared payloads; all others are anchored
+	// with the well-known empty payload hash — an existence-and-timing
+	// proof over the transaction tuple, verifiable with
+	// `mst-verify --payload-hex 0x00000000`. Gas cost scales with channel
+	// traffic: batch cadence is strongly advisable.
+	ModeAll Mode = "all"
+)
+
+// Validate normalizes and checks the mode.
+func (m *Mode) Validate() error {
+	switch *m {
+	case "", ModeOptIn:
+		*m = ModeOptIn
+	case ModeAll:
+	default:
+		return fmt.Errorf("capture: unknown mode %q (want %q or %q)", *m, ModeOptIn, ModeAll)
+	}
+	return nil
+}
+
+// systemChaincodes are never anchored in ModeAll: lifecycle/system
+// transactions are Fabric plumbing, not business facts, and anchoring them
+// by surprise would waste gas (and, for the write-back path, loop).
+var systemChaincodes = map[string]bool{
+	"_lifecycle": true,
+	"lscc":       true,
+	"cscc":       true,
+	"qscc":       true,
+	"vscc":       true,
+}
+
 // Config tunes the capture service.
 type Config struct {
+	// Mode selects opt-in (default) or anchor-all capture.
+	Mode Mode
+
 	// DefaultStartBlock is used when the outbox holds no checkpoint yet
 	// (i.e. the very first run). Zero replays the chain from genesis.
 	DefaultStartBlock uint64
 
 	// ExcludeChaincodes are never captured. The anchor-status chaincode MUST
 	// be listed here (belt) in addition to never emitting MSTProofRequest
-	// (braces), so write-backs can never echo-loop into new anchors.
+	// (braces), so write-backs can never echo-loop into new anchors — in
+	// ModeAll this guard is load-bearing, since every write-back is itself
+	// a valid transaction.
 	ExcludeChaincodes []string
+
+	// IncludeChaincodes, when non-empty, restricts ModeAll to these
+	// chaincodes ("anchor every transaction of chaincode X"). Ignored in
+	// ModeOptIn. Exclusions win over inclusions.
+	IncludeChaincodes []string
 }
 
 // Service is the capture loop.
@@ -46,6 +96,7 @@ type Service struct {
 	store   outbox.Store
 	cfg     Config
 	exclude map[string]bool
+	include map[string]bool
 	log     *slog.Logger
 
 	// processed counts blocks handled in this process lifetime (metrics/tests).
@@ -53,15 +104,25 @@ type Service struct {
 }
 
 // New builds a capture service over the given block source and outbox.
+// An invalid Mode falls back to opt-in with an error log rather than
+// panicking (callers should Validate config beforehand).
 func New(source Source, store outbox.Store, cfg Config, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
+	}
+	if err := cfg.Mode.Validate(); err != nil {
+		log.Error("invalid capture mode; falling back to opt-in", "err", err)
+		cfg.Mode = ModeOptIn
 	}
 	exclude := make(map[string]bool, len(cfg.ExcludeChaincodes))
 	for _, cc := range cfg.ExcludeChaincodes {
 		exclude[cc] = true
 	}
-	return &Service{source: source, store: store, cfg: cfg, exclude: exclude, log: log}
+	include := make(map[string]bool, len(cfg.IncludeChaincodes))
+	for _, cc := range cfg.IncludeChaincodes {
+		include[cc] = true
+	}
+	return &Service{source: source, store: store, cfg: cfg, exclude: exclude, include: include, log: log}
 }
 
 // Run consumes blocks from the last checkpoint until ctx is cancelled or the
@@ -134,8 +195,13 @@ func (s *Service) ProcessBlock(parsed *txmodel.Block) error {
 	return nil
 }
 
-// buildEntry returns the outbox entry for an opted-in transaction, (nil, "",
-// nil) when the tx did not opt in, or an error with a quarantine reason.
+// emptyPayloadHash is keccak256 of the canonical empty payload — the
+// payload_hash used in ModeAll for transactions that declared nothing.
+var emptyPayloadHash = canonical.Keccak256([]byte{0, 0, 0, 0})
+
+// buildEntry returns the outbox entry for a transaction, (nil, "", nil) when
+// the tx is not captured under the current mode, or an error with a
+// quarantine reason.
 func (s *Service) buildEntry(tx *txmodel.Tx, blockNumber uint64) (*outbox.Entry, string, error) {
 	var event *txmodel.Event
 	for i := range tx.Events {
@@ -151,18 +217,42 @@ func (s *Service) buildEntry(tx *txmodel.Tx, blockNumber uint64) (*outbox.Entry,
 		event = ev
 		break // Fabric records at most one event per tx
 	}
-	if event == nil {
-		return nil, "", nil
-	}
 
-	// The event payload must BE the canonical encoding; strict Decode
-	// guarantees re-encode == input, so hashing the received bytes hashes
-	// exactly what the chaincode declared, with no alternative serialization
-	// accepted.
-	if _, err := canonical.Decode(event.Payload); err != nil {
-		return nil, "non-canonical payload", err
+	var chaincodeID string
+	var payloadHash [32]byte
+	switch {
+	case event != nil:
+		// Opted-in (either mode): the event payload must BE the canonical
+		// encoding; strict Decode guarantees re-encode == input, so hashing
+		// the received bytes hashes exactly what the chaincode declared,
+		// with no alternative serialization accepted.
+		if _, err := canonical.Decode(event.Payload); err != nil {
+			return nil, "non-canonical payload", err
+		}
+		chaincodeID = event.ChaincodeID
+		payloadHash = canonical.Keccak256(event.Payload)
+
+	case s.cfg.Mode == ModeAll:
+		// Anchor-all: no declared payload — commit to the transaction tuple
+		// with the empty payload hash (existence-and-timing proof).
+		chaincodeID = tx.ChaincodeID
+		if chaincodeID == "" {
+			// Endorser tx without a decodable chaincode action; nothing
+			// meaningful to attribute the anchor to.
+			s.log.Warn("skipping tx without chaincode id in anchor-all mode", "txID", tx.TxID)
+			return nil, "", nil
+		}
+		if s.exclude[chaincodeID] || systemChaincodes[chaincodeID] {
+			return nil, "", nil
+		}
+		if len(s.include) > 0 && !s.include[chaincodeID] {
+			return nil, "", nil
+		}
+		payloadHash = emptyPayloadHash
+
+	default:
+		return nil, "", nil // opt-in mode, no event: not captured
 	}
-	payloadHash := canonical.Keccak256(event.Payload)
 
 	txID, err := canonical.ParseFabricTxID(tx.TxID)
 	if err != nil {
@@ -173,7 +263,7 @@ func (s *Service) buildEntry(tx *txmodel.Tx, blockNumber uint64) (*outbox.Entry,
 	}
 
 	commitment := canonical.NewCommitment(
-		txID, tx.ChannelID, event.ChaincodeID, blockNumber, tx.TimestampUnix, payloadHash)
+		txID, tx.ChannelID, chaincodeID, blockNumber, tx.TimestampUnix, payloadHash)
 	hash, err := commitment.Hash()
 	if err != nil {
 		return nil, "commitment", err
@@ -184,7 +274,7 @@ func (s *Service) buildEntry(tx *txmodel.Tx, blockNumber uint64) (*outbox.Entry,
 		EntryType:   outbox.EntryTypeCommitmentV1,
 		Commitment:  hash,
 		ChannelID:   tx.ChannelID,
-		ChaincodeID: event.ChaincodeID,
+		ChaincodeID: chaincodeID,
 		BlockNumber: blockNumber,
 		Timestamp:   tx.TimestampUnix,
 	}, "", nil

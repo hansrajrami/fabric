@@ -59,6 +59,23 @@ func TestParseExtractsEndorserTransactions(t *testing.T) {
 	}
 }
 
+func TestParseSurfacesInvokedChaincodeWithoutEvent(t *testing.T) {
+	block := blocktest.Build(t, 9,
+		blocktest.TxSpec{TxID: txID("f1"), ChannelID: "ch", Timestamp: 1, Valid: true,
+			ChaincodeID: "assets"}, // chaincode action, no event
+	)
+	parsed, err := blockparse.Parse(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Txs[0].ChaincodeID != "assets" {
+		t.Fatalf("invoked chaincode: %q", parsed.Txs[0].ChaincodeID)
+	}
+	if len(parsed.Txs[0].Events) != 0 {
+		t.Fatal("no event expected")
+	}
+}
+
 func TestParseSkipsNonEndorserEntries(t *testing.T) {
 	block := blocktest.Build(t, 1,
 		blocktest.TxSpec{

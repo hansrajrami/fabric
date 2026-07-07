@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hansrajrami/fabric/mst/relay/capture"
 	"github.com/hansrajrami/fabric/mst/relay/sender"
 )
 
@@ -33,6 +34,11 @@ func TestEnabledRequiresCoreSettings(t *testing.T) {
 	_, err := FromViper(v)
 	require.ErrorContains(t, err, "outboxPath")
 
+	v.Set("mst.captureMode", "everything")
+	_, err = FromViper(v)
+	require.ErrorContains(t, err, "unknown mode")
+	v.Set("mst.captureMode", "")
+
 	v.Set("mst.outboxPath", "/var/mst")
 	_, err = FromViper(v)
 	require.ErrorContains(t, err, "rpcURL")
@@ -50,6 +56,8 @@ func TestFullConfig(t *testing.T) {
 	v.Set("mst.evm.contractAddress", "0xabc")
 	v.Set("mst.evm.confirmations", 3)
 	v.Set("mst.evm.minBalanceGwei", 500000)
+	v.Set("mst.captureMode", "all")
+	v.Set("mst.includeChaincodes", []string{"assets"})
 	v.Set("mst.sender.cadenceMode", "batch")
 	v.Set("mst.sender.cadenceN", 10)
 	v.Set("mst.sender.cadenceMaxWait", "30s")
@@ -74,7 +82,10 @@ func TestFullConfig(t *testing.T) {
 	require.Equal(t, uint64(3), sc.Confirmations)
 	require.Equal(t, uint64(500000), cfg.EVM.MinBalanceGwei)
 
-	require.Equal(t, uint64(5), cfg.CaptureConfig().DefaultStartBlock)
+	cc := cfg.CaptureConfig()
+	require.Equal(t, uint64(5), cc.DefaultStartBlock)
+	require.Equal(t, capture.ModeAll, cc.Mode)
+	require.Equal(t, []string{"assets"}, cc.IncludeChaincodes)
 }
 
 func TestEVMKeyFromEnvOnly(t *testing.T) {

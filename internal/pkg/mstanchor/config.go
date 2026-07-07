@@ -44,6 +44,14 @@ type Config struct {
 	Channels []string
 	// DefaultStartBlock applies when a channel has no checkpoint yet.
 	DefaultStartBlock uint64
+	// CaptureMode: "opt-in" (default) anchors only MSTProofRequest
+	// emitters; "all" anchors every valid transaction (non-opted txs get
+	// the empty payload hash — an existence proof). Batch cadence is
+	// strongly advisable with "all".
+	CaptureMode string
+	// IncludeChaincodes restricts CaptureMode "all" to these chaincodes
+	// (empty = every chaincode). Ignored in opt-in mode.
+	IncludeChaincodes []string
 	// ExcludeChaincodes are never captured; AnchorStatusChaincode is always
 	// added (echo-loop guard).
 	ExcludeChaincodes     []string
@@ -114,6 +122,13 @@ func FromViper(v *viper.Viper) (*Config, error) {
 	c.OutboxPath = v.GetString("mst.outboxPath")
 	c.Channels = v.GetStringSlice("mst.channels")
 	c.DefaultStartBlock = uint64(v.GetInt64("mst.defaultStartBlock"))
+	c.CaptureMode = v.GetString("mst.captureMode")
+	mode := capture.Mode(c.CaptureMode)
+	if err := mode.Validate(); err != nil {
+		return nil, fmt.Errorf("mstanchor: %w", err)
+	}
+	c.CaptureMode = string(mode)
+	c.IncludeChaincodes = v.GetStringSlice("mst.includeChaincodes")
 	c.ExcludeChaincodes = v.GetStringSlice("mst.excludeChaincodes")
 	c.AnchorStatusChaincode = v.GetString("mst.anchorStatusChaincode")
 
@@ -218,8 +233,10 @@ func (c *Config) EVMConfig() (evm.Config, error) {
 // CaptureConfig maps to the shared capture config.
 func (c *Config) CaptureConfig() capture.Config {
 	return capture.Config{
+		Mode:              capture.Mode(c.CaptureMode),
 		DefaultStartBlock: c.DefaultStartBlock,
 		ExcludeChaincodes: c.ExcludeChaincodes,
+		IncludeChaincodes: c.IncludeChaincodes,
 	}
 }
 
