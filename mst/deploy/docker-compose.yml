@@ -1,0 +1,48 @@
+# Local MST-side composition: an EVM dev node plus the relayer daemon.
+# The Fabric side runs separately (fabric-samples test-network is the easiest;
+# see README.md in this directory for the full end-to-end walk).
+#
+#   docker compose -f mst/deploy/docker-compose.yml up
+#
+# Prereqs:
+#  - deploy the MSTAnchor contract to the evm service and put its address in
+#    your mst-relayd.json (see mst-relayd.example.json)
+#  - export MST_RELAYER_KEY (hardhat dev key #0 works for local runs)
+services:
+  evm:
+    image: node:22-bookworm-slim
+    working_dir: /app
+    volumes:
+      - ../anchor-contracts:/app
+    command: sh -c "npm ci && npx hardhat node --hostname 0.0.0.0"
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8545',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',method:'eth_chainId',id:1})}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  relayd:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.relayd
+    depends_on:
+      evm:
+        condition: service_healthy
+    environment:
+      - MST_RELAYER_KEY=${MST_RELAYER_KEY:?export MST_RELAYER_KEY}
+    volumes:
+      - ./config:/etc/mst-relay:ro
+      - relayd-outbox:/var/lib/mst-relay
+    ports:
+      - "9464:9464" # /metrics + /healthz
+
+volumes:
+  relayd-outbox:

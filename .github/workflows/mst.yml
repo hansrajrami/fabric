@@ -32,10 +32,37 @@ jobs:
         run: go vet ./...
       - name: go test (unit + vectors)
         working-directory: mst/canonical
-        run: go test -count=1 ./...
+        run: go test -race -count=1 ./...
       - name: fuzz canonicity (short)
         working-directory: mst/canonical
         run: go test -run '^$' -fuzz FuzzDecodeReEncode -fuzztime 30s
+
+  go-modules:
+    name: Go ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - fabric-chaincode/proofhelper
+          - fabric-chaincode/example-chaincode
+          - fabric-chaincode/anchor-status
+          - relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: mst/${{ matrix.module }}/go.sum
+      - name: go vet
+        working-directory: mst/${{ matrix.module }}
+        run: go vet ./...
+      - name: go build
+        working-directory: mst/${{ matrix.module }}
+        run: go build ./...
+      - name: go test
+        working-directory: mst/${{ matrix.module }}
+        run: go test -race -count=1 ./...
 
   ts-reference-vectors:
     name: TypeScript reference + vectors
@@ -78,3 +105,37 @@ jobs:
         run: |
           npm run abi
           git diff --exit-code abi/
+
+  evm-integration:
+    name: Relayer vs live EVM node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mst/anchor-contracts/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: mst/relay/go.sum
+      - name: install contracts toolchain
+        working-directory: mst/anchor-contracts
+        run: npm ci
+      - name: start hardhat node
+        working-directory: mst/anchor-contracts
+        run: |
+          npx hardhat node > /tmp/hardhat.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -s -X POST -H 'Content-Type: application/json' \
+              --data '{"jsonrpc":"2.0","method":"eth_chainId","id":1}' \
+              http://127.0.0.1:8545 > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "hardhat node did not come up" >&2; cat /tmp/hardhat.log >&2; exit 1
+      - name: integration test (submit/confirm/idempotency/sender pipeline)
+        working-directory: mst/relay
+        env:
+          MST_EVM_RPC: http://127.0.0.1:8545
+        run: go test -count=1 -run TestIntegration -v ./evm/

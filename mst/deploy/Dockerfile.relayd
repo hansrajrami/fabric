@@ -1,0 +1,18 @@
+# Builds the mst-relayd daemon (capture + sender in one binary).
+# Build context must be the mst/ directory:
+#   docker build -f deploy/Dockerfile.relayd -t mst-relayd .
+FROM golang:1.24 AS build
+WORKDIR /src
+COPY canonical/ canonical/
+COPY fabric-chaincode/proofhelper/ fabric-chaincode/proofhelper/
+COPY relay/ relay/
+WORKDIR /src/relay
+RUN CGO_ENABLED=0 go build -trimpath -o /out/mst-relayd ./cmd/mst-relayd && \
+    CGO_ENABLED=0 go build -trimpath -o /out/mst-verify ./cmd/mst-verify
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/mst-relayd /usr/local/bin/mst-relayd
+COPY --from=build /out/mst-verify /usr/local/bin/mst-verify
+USER nonroot
+ENTRYPOINT ["/usr/local/bin/mst-relayd"]
+CMD ["--config", "/etc/mst-relay/mst-relayd.json"]

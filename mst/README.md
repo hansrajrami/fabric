@@ -63,6 +63,40 @@ Regenerate goldens with: `go test ./mst/canonical -run TestVectors -update`.
 - **Ints are unsigned:** `int` fields are unsigned 256-bit (32-byte
   big-endian, one canonical form per value). Negative values are rejected.
 
+## End-to-end flow
+
+```
+ Business chaincode ── proofhelper.Emit("MSTProofRequest", canonicalBytes)
+        │  (block commits; Fabric Gateway delivers it post-commit)
+        ▼
+ capture (relay/capture) ──► outbox (relay/outbox, LevelDB) ──► sender (relay/sender) ──► [MST] MSTAnchor
+   valid txs only              atomic entry+checkpoint            cadence, workers,        idempotent,
+   echo-loop guard             idempotent, crash-safe             backoff, pre-submit      immutable/key,
+   quarantine                                                     getAnchor short-circuit  emits Anchored
+                                                                        │
+                                                                        ▼
+                                                  fabricwb ──► [Fabric] mst-anchor-status (RecordAnchor)
+```
+
+Fabric's commit path is never touched: capture consumes already-committed
+blocks, and all network work is asynchronous behind the durable outbox.
+**Durability stops loss; idempotency stops duplication — together:
+exactly-once in effect.**
+
+## Acceptance criteria traceability (spec §17)
+
+| # | Criterion | Where proven |
+|---|---|---|
+| 1 | Opt-in by emitting `MSTProofRequest` via the helper | `proofhelper` API + tests; `example-chaincode` contract tests |
+| 2 | Every opted-in tx → exactly one commitment anchored automatically | capture tests (`TestCaptureEndToEnd`), sender happy path, EVM integration test |
+| 3 | Exactly-once in effect (duplicates/retries never alter an anchor) | contract duplicate-no-op tests; `TestPutBlockIsIdempotentOnRedelivery`; `TestAlreadyAnchoredShortCircuits…`; integration duplicate test |
+| 4 | Nothing lost across relayer crash / MST outage | outbox `TestCrashRecoveryReopen`; sender `TestConfirmTimeout…`, `TestCrashRecoveryFromSubmitted…`; capture `TestCaptureRestartExactlyOnce` |
+| 5 | Fabric commit never blocked or slowed | structural: capture consumes post-commit block events only (`relay/capture` docs + design) |
+| 6 | Anchor status recorded on Fabric; no echo loop | `anchor-status` tests (never emits events; idempotent; MSP-gated); capture exclusion test |
+| 7 | Anyone with original data can verify | `verifylib` tests incl. tamper matrix; `mst-verify` MATCH/NO-MATCH demo |
+| 8 | Cadence switchable by config | `TestBatchCadence…` tests; `cadenceMode` in relayd config |
+| 9 | Cross-language vectors pass in CI in all implementations | `.github/workflows/mst.yml`: Go + TS + Solidity vector jobs |
+
 ## Development
 
 ```bash
