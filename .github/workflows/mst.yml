@@ -10,9 +10,19 @@ name: MST Anchoring
 on:
   push:
     branches: ["mst-integration-*"]
-    paths: ["mst/**", ".github/workflows/mst.yml"]
+    paths:
+      - "mst/**"
+      - "internal/pkg/mstanchor/**"
+      - "internal/peer/node/**"
+      - "go.mod"
+      - ".github/workflows/mst.yml"
   pull_request:
-    paths: ["mst/**", ".github/workflows/mst.yml"]
+    paths:
+      - "mst/**"
+      - "internal/pkg/mstanchor/**"
+      - "internal/peer/node/**"
+      - "go.mod"
+      - ".github/workflows/mst.yml"
 
 permissions:
   contents: read
@@ -105,6 +115,24 @@ jobs:
         run: |
           npm run abi
           git diff --exit-code abi/
+
+  embedded-peer:
+    name: Peer with embedded anchoring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: mstanchor unit tests
+        run: go test -race -count=1 ./internal/pkg/mstanchor/...
+      - name: peer node package tests
+        run: go test -count=1 ./internal/peer/node/...
+      - name: build the peer binary and prove it runs (no proto conflicts)
+        run: |
+          go build -o /tmp/peer ./cmd/peer
+          /tmp/peer version
 
   evm-integration:
     name: Relayer vs live EVM node

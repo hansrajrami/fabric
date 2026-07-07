@@ -83,6 +83,32 @@ blocks, and all network work is asynchronous behind the durable outbox.
 **Durability stops loss; idempotency stops duplication — together:
 exactly-once in effect.**
 
+## Deployment modes
+
+The same pipeline (capture core, outbox, sender — all proto-free via
+`relay/txmodel`) ships in two interchangeable forms:
+
+| | **Sidecar** (`mst-relayd`) | **Embedded** (in the peer binary) |
+|---|---|---|
+| Block source | Fabric Gateway block events (`relay/gwsource`, apiv2 protos) | The peer's own ledger iterator (`internal/pkg/mstanchor`, in-tree protos) |
+| Config | JSON file (`mst/deploy/mst-relayd.example.json`) | `core.yaml` `mst:` section (see `sampleconfig/core.yaml`) |
+| Enable | run the daemon | `mst.enabled: true` (**default false** — vanilla peer otherwise) |
+| Channels | one per process | all joined channels (or `mst.channels` allowlist), one outbox/checkpoint per channel |
+| Write-back | gateway client over the peer connection | the peer's own gateway server invoked **in-process** |
+| Fault isolation | full (separate process) | shares the peer process |
+| EVM key | `MST_RELAYER_KEY` env | `MST_RELAYER_KEY` env on the peer process |
+
+Choose the sidecar when operational isolation matters most; choose embedded
+when shipping a single differentiated peer binary matters most. Both are
+safe to run redundantly against the same contract — the idempotent anchor
+absorbs duplicates — but running both intentionally is wasteful.
+
+The two proto worlds never meet: the peer links `fabric-protos-go`, the
+sidecar's gateway source links `fabric-protos-go-apiv2`, and everything
+shared between them is proto-agnostic (`relay/txmodel`). Linking both proto
+modules into one binary would panic at init on duplicate proto registration,
+which is why `relay/gwsource` must never be imported from peer-linked code.
+
 ## Acceptance criteria traceability (spec §17)
 
 | # | Criterion | Where proven |
