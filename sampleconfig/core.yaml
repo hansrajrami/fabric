@@ -799,3 +799,63 @@ metrics:
 
         # prefix is prepended to all emitted statsd metrics
         prefix:
+
+###############################################################################
+#
+#    MST proof anchoring (embedded relayer)
+#
+#    Anchors a tamper-evident commitment for opted-in transactions (those
+#    whose chaincode emits an MSTProofRequest event) on the MST public
+#    blockchain, directly from this peer. Disabled by default: with
+#    enabled: false the peer behaves exactly like vanilla Fabric. The
+#    standalone mst-relayd daemon is the alternative deployment; do not run
+#    both against the same channels with different outboxes unless you rely
+#    on the anchor contract's idempotency (safe, but wasteful).
+#
+#    The relayer's EVM private key is NEVER configured here - export it in
+#    the MST_RELAYER_KEY environment variable of the peer process.
+#
+###############################################################################
+mst:
+    enabled: false
+    # Root directory for the durable outboxes (one subdirectory per channel).
+    outboxPath: /var/hyperledger/production/mst-outbox
+    # Channels to anchor; empty means every channel this peer joins.
+    channels: []
+    # First block to capture when a channel has no checkpoint yet.
+    defaultStartBlock: 0
+    # Chaincodes whose proof requests are ignored.
+    excludeChaincodes: []
+    # Write-back chaincode recording anchor status on Fabric. Requires the
+    # embedded gateway (peer.gateway.enabled) and the writeback identity
+    # below. Automatically excluded from capture (echo-loop guard).
+    anchorStatusChaincode: ""
+    evm:
+        rpcURL: http://127.0.0.1:8545
+        contractAddress: ""
+        # 0 = fetch from the node at startup
+        chainID: 0
+        # 0 = default (200000)
+        gasLimit: 0
+        # 0 = let the node suggest the priority fee
+        tipCapGwei: 0
+        # Confirmations before an anchor counts as final (reorg guard).
+        confirmations: 1
+    sender:
+        # 0 = default (4)
+        workers: 0
+        # per-tx | batch | interval
+        cadenceMode: per-tx
+        cadenceN: 0
+        cadenceInterval: 0s
+        cadenceMaxWait: 0s
+        backoffMin: 1s
+        backoffMax: 5m
+        confirmTimeout: 2m
+    # Fabric identity used to submit RecordAnchor via the embedded gateway.
+    writeback:
+        mspID: ""
+        certPath: ""
+        keyPath: ""
+    # Serves /metrics (Prometheus text) and /healthz; empty disables.
+    metricsAddr: ""

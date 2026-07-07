@@ -849,6 +849,7 @@ func serve(args []string) error {
 				builtinSCCs,
 			)
 			gatewayprotos.RegisterGatewayServer(peerServer.Server(), gatewayServer)
+			mstGatewayServer = gatewayServer
 		} else {
 			logger.Warning("Discovery service must be enabled for embedded gateway")
 		}
@@ -875,9 +876,24 @@ func serve(args []string) error {
 		}()
 	}
 
+	// MST proof anchoring, embedded in the peer behind core.yaml
+	// `mst.enabled` (default false). When disabled this is a no-op and the
+	// peer behaves exactly like vanilla Fabric. When enabled it runs the
+	// same capture/outbox/sender pipeline as the standalone mst-relayd,
+	// fed from this peer's own ledgers strictly post-commit.
+	mstService, err := startMSTAnchoring(peerInstance)
+	if err != nil {
+		return errors.WithMessage(err, "failed to start MST anchoring")
+	}
+	mstStop := func() {
+		if mstService != nil {
+			mstService.Stop()
+		}
+	}
+
 	handleSignals(addPlatformSignals(map[os.Signal]func(){
-		syscall.SIGINT:  func() { containerRouter.Shutdown(5 * time.Second); serve <- nil },
-		syscall.SIGTERM: func() { containerRouter.Shutdown(5 * time.Second); serve <- nil },
+		syscall.SIGINT:  func() { mstStop(); containerRouter.Shutdown(5 * time.Second); serve <- nil },
+		syscall.SIGTERM: func() { mstStop(); containerRouter.Shutdown(5 * time.Second); serve <- nil },
 	}))
 
 	logger.Infof("Started peer with ID=[%s], network ID=[%s], address=[%s]", coreConfig.PeerID, coreConfig.NetworkID, coreConfig.PeerAddress)
