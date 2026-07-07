@@ -166,7 +166,21 @@ func (s *Service) startPipeline(ctx context.Context, channelID string) error {
 		return fmt.Errorf("no ledger for channel %s", channelID)
 	}
 
-	store, err := outbox.Open(filepath.Join(s.cfg.OutboxPath, channelID), nil)
+	// The outbox backend follows the peer's state database: CouchDB peers
+	// keep the outbox on the same CouchDB server (own databases), LevelDB
+	// peers keep it embedded on local disk.
+	var store outbox.Store
+	var err error
+	if s.cfg.Outbox.Backend == "couchdb" {
+		store, err = outbox.OpenCouchDB(outbox.CouchDBOptions{
+			URL:      s.cfg.Outbox.CouchDB.Address,
+			Username: s.cfg.Outbox.CouchDB.Username,
+			Password: s.cfg.Outbox.CouchDB.Password,
+			Database: couchDatabaseName(channelID),
+		})
+	} else {
+		store, err = outbox.Open(filepath.Join(s.cfg.OutboxPath, channelID), nil)
+	}
 	if err != nil {
 		return err
 	}

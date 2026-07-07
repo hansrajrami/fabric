@@ -13,6 +13,7 @@ import (
 	"github.com/hansrajrami/fabric/mst/relay/capture"
 	"github.com/hansrajrami/fabric/mst/relay/evm"
 	"github.com/hansrajrami/fabric/mst/relay/gwsource"
+	"github.com/hansrajrami/fabric/mst/relay/outbox"
 	"github.com/hansrajrami/fabric/mst/relay/sender"
 )
 
@@ -22,8 +23,23 @@ const EnvRelayerKey = "MST_RELAYER_KEY"
 
 // File is the on-disk JSON shape.
 type File struct {
-	// OutboxPath is the LevelDB directory for the durable outbox.
+	// OutboxPath is the LevelDB directory for the durable outbox (used when
+	// outbox.type is empty or "leveldb").
 	OutboxPath string `json:"outboxPath"`
+
+	// Outbox optionally selects the backend. Default: embedded LevelDB at
+	// OutboxPath. With type "couchdb" the outbox lives in a dedicated
+	// database on a CouchDB server instead (typically the one the peer
+	// already runs for its state database).
+	Outbox struct {
+		Type    string `json:"type"` // "" | "leveldb" | "couchdb"
+		CouchDB struct {
+			URL      string `json:"url"`
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Database string `json:"database"`
+		} `json:"couchDB"`
+	} `json:"outbox"`
 
 	Fabric struct {
 		Endpoint           string   `json:"endpoint"`
@@ -76,8 +92,17 @@ func Load(path string) (*File, error) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
-	if f.OutboxPath == "" {
-		return nil, fmt.Errorf("config: outboxPath is required")
+	switch f.Outbox.Type {
+	case "", "leveldb":
+		if f.OutboxPath == "" {
+			return nil, fmt.Errorf("config: outboxPath is required")
+		}
+	case "couchdb":
+		if f.Outbox.CouchDB.URL == "" || f.Outbox.CouchDB.Database == "" {
+			return nil, fmt.Errorf("config: outbox.couchDB.url and outbox.couchDB.database are required for the couchdb outbox")
+		}
+	default:
+		return nil, fmt.Errorf("config: unknown outbox.type %q", f.Outbox.Type)
 	}
 	if f.EVM.RPCURL == "" || f.EVM.ContractAddress == "" {
 		return nil, fmt.Errorf("config: evm.rpcURL and evm.contractAddress are required")
@@ -98,6 +123,19 @@ func appendUnique(list []string, v string) []string {
 		}
 	}
 	return append(list, v)
+}
+
+// OpenOutbox opens the configured outbox backend.
+func (f *File) OpenOutbox() (outbox.Store, error) {
+	if f.Outbox.Type == "couchdb" {
+		return outbox.OpenCouchDB(outbox.CouchDBOptions{
+			URL:      f.Outbox.CouchDB.URL,
+			Username: f.Outbox.CouchDB.Username,
+			Password: f.Outbox.CouchDB.Password,
+			Database: f.Outbox.CouchDB.Database,
+		})
+	}
+	return outbox.Open(f.OutboxPath, nil)
 }
 
 // GatewayConfig maps to the capture source configuration.

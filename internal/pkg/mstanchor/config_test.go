@@ -98,3 +98,52 @@ func TestChannelAllowedEmptyMeansAll(t *testing.T) {
 	c := &Config{}
 	require.True(t, c.channelAllowed("anything"))
 }
+
+func TestOutboxFollowsPeerStateDatabase(t *testing.T) {
+	base := func() *viper.Viper {
+		v := viper.New()
+		v.Set("mst.enabled", true)
+		v.Set("mst.outboxPath", "/var/mst")
+		v.Set("mst.evm.rpcURL", "http://127.0.0.1:8545")
+		v.Set("mst.evm.contractAddress", "0xabc")
+		return v
+	}
+
+	// Default (goleveldb, or unset): embedded LevelDB.
+	cfg, err := FromViper(base())
+	require.NoError(t, err)
+	require.Equal(t, "leveldb", cfg.Outbox.Backend)
+
+	// Peer on CouchDB: outbox follows, reusing the peer's connection config.
+	v := base()
+	v.Set("ledger.state.stateDatabase", "CouchDB")
+	v.Set("ledger.state.couchDBConfig.couchDBAddress", "127.0.0.1:5984")
+	v.Set("ledger.state.couchDBConfig.username", "admin")
+	v.Set("ledger.state.couchDBConfig.password", "adminpw")
+	cfg, err = FromViper(v)
+	require.NoError(t, err)
+	require.Equal(t, "couchdb", cfg.Outbox.Backend)
+	require.Equal(t, "127.0.0.1:5984", cfg.Outbox.CouchDB.Address)
+	require.Equal(t, "admin", cfg.Outbox.CouchDB.Username)
+	require.Equal(t, "adminpw", cfg.Outbox.CouchDB.Password)
+
+	// mst.outbox.couchDB.* overrides win over the peer's settings.
+	v.Set("mst.outbox.couchDB.address", "couch.example.com:5984")
+	v.Set("mst.outbox.couchDB.username", "mst")
+	cfg, err = FromViper(v)
+	require.NoError(t, err)
+	require.Equal(t, "couch.example.com:5984", cfg.Outbox.CouchDB.Address)
+	require.Equal(t, "mst", cfg.Outbox.CouchDB.Username)
+	require.Equal(t, "adminpw", cfg.Outbox.CouchDB.Password, "unset override falls back to peer config")
+
+	// CouchDB state database without any address is a hard error.
+	v = base()
+	v.Set("ledger.state.stateDatabase", "CouchDB")
+	_, err = FromViper(v)
+	require.ErrorContains(t, err, "couchDB address")
+}
+
+func TestCouchDatabaseName(t *testing.T) {
+	require.Equal(t, "mst_outbox_mychannel", couchDatabaseName("mychannel"))
+	require.Equal(t, "mst_outbox_my_channel_v2", couchDatabaseName("my.channel.v2"))
+}

@@ -19,7 +19,6 @@ import (
 	"github.com/hansrajrami/fabric/mst/relay/evm"
 	"github.com/hansrajrami/fabric/mst/relay/fabricwb"
 	"github.com/hansrajrami/fabric/mst/relay/gwsource"
-	"github.com/hansrajrami/fabric/mst/relay/outbox"
 	"github.com/hansrajrami/fabric/mst/relay/sender"
 )
 
@@ -42,7 +41,7 @@ func run() error {
 		return err
 	}
 
-	store, err := outbox.Open(cfg.OutboxPath, nil)
+	store, err := cfg.OpenOutbox()
 	if err != nil {
 		return err
 	}

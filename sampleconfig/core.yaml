@@ -818,8 +818,20 @@ metrics:
 ###############################################################################
 mst:
     enabled: false
-    # Root directory for the durable outboxes (one subdirectory per channel).
+    # The durable outbox AUTO-FOLLOWS ledger.state.stateDatabase:
+    #  - goleveldb: embedded LevelDB under outboxPath (one subdir per channel)
+    #  - CouchDB:   dedicated per-channel databases (mst_outbox_<channel>) on
+    #               the same CouchDB server as the peer's state database,
+    #               reusing ledger.state.couchDBConfig credentials. Override
+    #               the connection with mst.outbox.couchDB.{address,username,
+    #               password} if the outbox should live on a different server.
+    # Root directory for the durable outboxes (LevelDB backend).
     outboxPath: /var/hyperledger/production/mst-outbox
+    # outbox:
+    #     couchDB:
+    #         address: ""
+    #         username: ""
+    #         password: ""
     # Channels to anchor; empty means every channel this peer joins.
     channels: []
     # First block to capture when a channel has no checkpoint yet.

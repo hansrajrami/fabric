@@ -178,9 +178,17 @@ func (s *LevelDB) PutBlock(entries []*Entry, nextBlock uint64) (int, error) {
 		inserted++
 	}
 
-	var cpv [8]byte
-	binary.BigEndian.PutUint64(cpv[:], nextBlock)
-	batch.Put([]byte{keyCheckpoint}, cpv[:])
+	// Advance the checkpoint only forward: a redelivered older block must
+	// never regress it.
+	current, ok, err := s.checkpointLocked()
+	if err != nil {
+		return 0, err
+	}
+	if !ok || nextBlock > current {
+		var cpv [8]byte
+		binary.BigEndian.PutUint64(cpv[:], nextBlock)
+		batch.Put([]byte{keyCheckpoint}, cpv[:])
+	}
 
 	if err := s.db.Write(batch, s.wo); err != nil {
 		return 0, fmt.Errorf("outbox: write block batch: %w", err)

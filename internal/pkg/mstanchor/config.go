@@ -18,6 +18,7 @@ package mstanchor
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -68,6 +69,20 @@ type Config struct {
 		ConfirmTimeout  time.Duration
 	}
 
+	// Outbox backend AUTO-FOLLOWS the peer's ledger.state.stateDatabase:
+	// goleveldb -> embedded LevelDB under OutboxPath; CouchDB -> dedicated
+	// per-channel databases on the peer's own CouchDB server (never the
+	// peer's state databases themselves). Connection settings come from
+	// ledger.state.couchDBConfig, overridable via mst.outbox.couchDB.*.
+	Outbox struct {
+		Backend string // "leveldb" | "couchdb"
+		CouchDB struct {
+			Address  string
+			Username string
+			Password string
+		}
+	}
+
 	// WriteBack is the relayer's Fabric identity used to submit RecordAnchor
 	// through the peer's embedded gateway. Required when
 	// AnchorStatusChaincode is set.
@@ -114,6 +129,27 @@ func FromViper(v *viper.Viper) (*Config, error) {
 	c.Sender.BackoffMax = v.GetDuration("mst.sender.backoffMax")
 	c.Sender.ConfirmTimeout = v.GetDuration("mst.sender.confirmTimeout")
 
+	// Auto-follow the peer's state database choice.
+	c.Outbox.Backend = "leveldb"
+	if strings.EqualFold(v.GetString("ledger.state.stateDatabase"), "CouchDB") {
+		c.Outbox.Backend = "couchdb"
+		c.Outbox.CouchDB.Address = firstNonEmpty(
+			v.GetString("mst.outbox.couchDB.address"),
+			v.GetString("ledger.state.couchDBConfig.couchDBAddress"),
+		)
+		c.Outbox.CouchDB.Username = firstNonEmpty(
+			v.GetString("mst.outbox.couchDB.username"),
+			v.GetString("ledger.state.couchDBConfig.username"),
+		)
+		c.Outbox.CouchDB.Password = firstNonEmpty(
+			v.GetString("mst.outbox.couchDB.password"),
+			v.GetString("ledger.state.couchDBConfig.password"),
+		)
+		if c.Outbox.CouchDB.Address == "" {
+			return nil, fmt.Errorf("mstanchor: state database is CouchDB but no couchDB address is configured")
+		}
+	}
+
 	c.WriteBack.MSPID = v.GetString("mst.writeback.mspID")
 	c.WriteBack.CertPath = v.GetString("mst.writeback.certPath")
 	c.WriteBack.KeyPath = v.GetString("mst.writeback.keyPath")
@@ -130,6 +166,22 @@ func FromViper(v *viper.Viper) (*Config, error) {
 		c.ExcludeChaincodes = appendUnique(c.ExcludeChaincodes, c.AnchorStatusChaincode)
 	}
 	return c, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// couchDatabaseName derives the per-channel outbox database name. Channel
+// ids match [a-z][a-z0-9.-]* and CouchDB forbids '.', so dots map to '_'
+// (which cannot occur in channel ids — no collisions).
+func couchDatabaseName(channelID string) string {
+	return "mst_outbox_" + strings.ReplaceAll(channelID, ".", "_")
 }
 
 func appendUnique(list []string, v string) []string {

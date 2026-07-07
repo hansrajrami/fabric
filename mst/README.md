@@ -96,6 +96,7 @@ The same pipeline (capture core, outbox, sender — all proto-free via
 | Channels | one per process | all joined channels (or `mst.channels` allowlist), one outbox/checkpoint per channel |
 | Write-back | gateway client over the peer connection | the peer's own gateway server invoked **in-process** |
 | Fault isolation | full (separate process) | shares the peer process |
+| Outbox backend | LevelDB dir, or CouchDB via `outbox.type` in the JSON config | **auto-follows `ledger.state.stateDatabase`**: LevelDB peers keep it on local disk, CouchDB peers keep it in `mst_outbox_<channel>` databases on the peer's CouchDB server (own databases — never the peer's state DBs) |
 | EVM key | `MST_RELAYER_KEY` env | `MST_RELAYER_KEY` env on the peer process |
 
 Choose the sidecar when operational isolation matters most; choose embedded
