@@ -1,0 +1,80 @@
+# CI for the MST proof-anchoring integration (everything under mst/).
+#
+# The load-bearing job is the cross-language vector gate: the Go
+# implementation (mst/canonical), the TypeScript reference
+# (mst/testvectors/reference-ts), and Solidity's own abi.encode (Hardhat
+# vector tests) must all agree byte-identically on mst/testvectors/vectors.json.
+# If any implementation diverges, the build fails.
+name: MST Anchoring
+
+on:
+  push:
+    branches: ["mst-integration-*"]
+    paths: ["mst/**", ".github/workflows/mst.yml"]
+  pull_request:
+    paths: ["mst/**", ".github/workflows/mst.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  go-canonical:
+    name: Go canonical encoding + vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: mst/canonical/go.sum
+      - name: go vet
+        working-directory: mst/canonical
+        run: go vet ./...
+      - name: go test (unit + vectors)
+        working-directory: mst/canonical
+        run: go test -count=1 ./...
+      - name: fuzz canonicity (short)
+        working-directory: mst/canonical
+        run: go test -run '^$' -fuzz FuzzDecodeReEncode -fuzztime 30s
+
+  ts-reference-vectors:
+    name: TypeScript reference + vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mst/testvectors/reference-ts/package-lock.json
+      - name: install
+        working-directory: mst/testvectors/reference-ts
+        run: npm ci
+      - name: vectors
+        working-directory: mst/testvectors/reference-ts
+        run: npm test
+
+  anchor-contracts:
+    name: Anchor contract + EVM vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mst/anchor-contracts/package-lock.json
+      - name: install
+        working-directory: mst/anchor-contracts
+        run: npm ci
+      - name: compile
+        working-directory: mst/anchor-contracts
+        run: npx hardhat compile
+      - name: test
+        working-directory: mst/anchor-contracts
+        run: npx hardhat test
+      - name: exported ABI is current
+        working-directory: mst/anchor-contracts
+        run: |
+          npm run abi
+          git diff --exit-code abi/

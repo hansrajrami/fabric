@@ -1,0 +1,16 @@
+{
+  "name": "mst-canonical-reference",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Independent TypeScript reference implementation of the MST canonical encoding and commitment, used as the cross-language CI gate against the Go implementation",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "ethers": "^6.17.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,488 @@
+{
+  "_comment": "Cross-language test vectors for the MST canonical encoding and commitment (spec sections 6 and 10). The Go implementation (mst/canonical) and the TypeScript reference (mst/testvectors/reference-ts) must both pass every vector byte-identically; CI fails on any divergence. Expected values are regenerated with: go test ./mst/canonical -run TestVectors -update — any change to them requires a conscious schema_version bump.",
+  "schemaVersion": 1,
+  "domainTagPreimage": "MST_FABRIC_TX_ANCHOR_v1",
+  "domainTag": "0x02825c8b6be7e97013d46092e3954827bc06860c7837e1aed9560da317b96093",
+  "agreement": [
+    {
+      "id": "A1",
+      "description": "empty payload has a stable, defined encoding and hash",
+      "payload": [],
+      "encoding": "0x00000000",
+      "payloadHash": "0xe8e77626586f73b955364c7b4bbf0bb7f7685ebd40e852b164633a4acbd3244c"
+    },
+    {
+      "id": "A2",
+      "description": "single int field",
+      "payload": [
+        {
+          "name": "amount",
+          "type": "int",
+          "value": "100"
+        }
+      ],
+      "encoding": "0x0000000100000006616d6f756e7401000000200000000000000000000000000000000000000000000000000000000000000064",
+      "payloadHash": "0xb93bb6002c6e4606a9c2db84e4e390451cd62d3f0ce6fbf0338cd697da643e51"
+    },
+    {
+      "id": "A3",
+      "description": "one field of each type",
+      "payload": [
+        {
+          "name": "a",
+          "type": "int",
+          "value": "1"
+        },
+        {
+          "name": "b",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "c",
+          "type": "string",
+          "value": "hi"
+        },
+        {
+          "name": "d",
+          "type": "bytes",
+          "valueHex": "0xdeadbeef"
+        }
+      ],
+      "encoding": "0x00000004000000016101000000200000000000000000000000000000000000000000000000000000000000000001000000016202000000010100000001630300000002686900000001640400000004deadbeef",
+      "payloadHash": "0x77900205e4acc460705533130c97305e2cda9004bb74e4f8c7460c03954b08bc"
+    },
+    {
+      "id": "A5",
+      "description": "unicode string value and multi-byte name survive byte-exactly",
+      "payload": [
+        {
+          "name": "état",
+          "type": "string",
+          "value": "prêt à 100%"
+        },
+        {
+          "name": "ok",
+          "type": "bool",
+          "value": false
+        }
+      ],
+      "encoding": "0x00000002000000026f6b02000000010000000005c3a9746174030000000d7072c3aa7420c3a02031303025",
+      "payloadHash": "0xb18cc0ca4b3e828e25bcee7e5c1810ba43813acd2153a1ff59c2dc5cfdb63323"
+    }
+  ],
+  "commitments": [
+    {
+      "id": "A4",
+      "description": "full commitment over the fixed 8-field tuple",
+      "payload": [
+        {
+          "name": "a",
+          "type": "int",
+          "value": "1"
+        },
+        {
+          "name": "b",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "c",
+          "type": "string",
+          "value": "hi"
+        },
+        {
+          "name": "d",
+          "type": "bytes",
+          "valueHex": "0xdeadbeef"
+        }
+      ],
+      "fabricTxId": "0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+      "channelId": "mychannel",
+      "chaincodeId": "asset-transfer",
+      "blockNumber": 12345,
+      "timestamp": 1720000000,
+      "payloadHash": "0x77900205e4acc460705533130c97305e2cda9004bb74e4f8c7460c03954b08bc",
+      "abiEncoding": "0x000000000000000000000000000000000000000000000000000000000000000102825c8b6be7e97013d46092e3954827bc06860c7837e1aed9560da317b9609300112233445566778899aabbccddeeff00112233445566778899aabbccddeeff0000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000014000000000000000000000000000000000000000000000000000000000000030390000000000000000000000000000000000000000000000000000000066851e0077900205e4acc460705533130c97305e2cda9004bb74e4f8c7460c03954b08bc00000000000000000000000000000000000000000000000000000000000000096d796368616e6e656c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e61737365742d7472616e73666572000000000000000000000000000000000000",
+      "commitment": "0x29193539ddee5e8a70271d955ce725eefeb7f3acd585cdfa7de6586ca44b7238"
+    },
+    {
+      "id": "A6",
+      "description": "commitment with empty payload and minimal ids",
+      "payload": [],
+      "fabricTxId": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "channelId": "c",
+      "chaincodeId": "x",
+      "blockNumber": 0,
+      "timestamp": 0,
+      "payloadHash": "0xe8e77626586f73b955364c7b4bbf0bb7f7685ebd40e852b164633a4acbd3244c",
+      "abiEncoding": "0x000000000000000000000000000000000000000000000000000000000000000102825c8b6be7e97013d46092e3954827bc06860c7837e1aed9560da317b96093ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000014000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e8e77626586f73b955364c7b4bbf0bb7f7685ebd40e852b164633a4acbd3244c0000000000000000000000000000000000000000000000000000000000000001630000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000017800000000000000000000000000000000000000000000000000000000000000",
+      "commitment": "0x4e9674180494cfedefb0c587b4e7dbe8993b701a946a4b9ef0260f401230c787"
+    }
+  ],
+  "ordering": [
+    {
+      "id": "B1",
+      "description": "field order at construction never matters",
+      "payloads": [
+        [
+          {
+            "name": "x",
+            "type": "int",
+            "value": "1"
+          },
+          {
+            "name": "y",
+            "type": "int",
+            "value": "2"
+          }
+        ],
+        [
+          {
+            "name": "y",
+            "type": "int",
+            "value": "2"
+          },
+          {
+            "name": "x",
+            "type": "int",
+            "value": "1"
+          }
+        ]
+      ]
+    },
+    {
+      "id": "B2",
+      "description": "byte-wise sort, never locale: Z(0x5A) \u003c _(0x5F) \u003c a(0x61)",
+      "payloads": [
+        [
+          {
+            "name": "Z",
+            "type": "int",
+            "value": "1"
+          },
+          {
+            "name": "a",
+            "type": "int",
+            "value": "2"
+          },
+          {
+            "name": "_",
+            "type": "int",
+            "value": "3"
+          }
+        ],
+        [
+          {
+            "name": "a",
+            "type": "int",
+            "value": "2"
+          },
+          {
+            "name": "_",
+            "type": "int",
+            "value": "3"
+          },
+          {
+            "name": "Z",
+            "type": "int",
+            "value": "1"
+          }
+        ]
+      ]
+    },
+    {
+      "id": "B3",
+      "description": "multi-byte UTF-8 names sorted by encoded bytes: e \u003c é \u003c ф \u003c 😀",
+      "payloads": [
+        [
+          {
+            "name": "😀",
+            "type": "int",
+            "value": "3"
+          },
+          {
+            "name": "ф",
+            "type": "int",
+            "value": "2"
+          },
+          {
+            "name": "é",
+            "type": "int",
+            "value": "1"
+          },
+          {
+            "name": "e",
+            "type": "int",
+            "value": "0"
+          }
+        ],
+        [
+          {
+            "name": "e",
+            "type": "int",
+            "value": "0"
+          },
+          {
+            "name": "é",
+            "type": "int",
+            "value": "1"
+          },
+          {
+            "name": "ф",
+            "type": "int",
+            "value": "2"
+          },
+          {
+            "name": "😀",
+            "type": "int",
+            "value": "3"
+          }
+        ]
+      ]
+    }
+  ],
+  "distinct": [
+    {
+      "id": "C1",
+      "description": "length framing: shifting bytes between adjacent values must change the hash",
+      "payloads": [
+        [
+          {
+            "name": "k1",
+            "type": "string",
+            "value": "ab"
+          },
+          {
+            "name": "k2",
+            "type": "string",
+            "value": "c"
+          }
+        ],
+        [
+          {
+            "name": "k1",
+            "type": "string",
+            "value": "a"
+          },
+          {
+            "name": "k2",
+            "type": "string",
+            "value": "bc"
+          }
+        ]
+      ]
+    },
+    {
+      "id": "C2",
+      "description": "field-count guard: adding a field is never confusable",
+      "payloads": [
+        [
+          {
+            "name": "a",
+            "type": "int",
+            "value": "1"
+          }
+        ],
+        [
+          {
+            "name": "a",
+            "type": "int",
+            "value": "1"
+          },
+          {
+            "name": "b",
+            "type": "int",
+            "value": "2"
+          }
+        ]
+      ]
+    },
+    {
+      "id": "C3",
+      "description": "type tags: int(100) vs string \"100\" vs bytes of the same digits",
+      "payloads": [
+        [
+          {
+            "name": "v",
+            "type": "int",
+            "value": "100"
+          }
+        ],
+        [
+          {
+            "name": "v",
+            "type": "string",
+            "value": "100"
+          }
+        ],
+        [
+          {
+            "name": "v",
+            "type": "bytes",
+            "valueHex": "0x313030"
+          }
+        ]
+      ]
+    },
+    {
+      "id": "C4",
+      "description": "integer values are position, not representation: 1 != 256",
+      "payloads": [
+        [
+          {
+            "name": "v",
+            "type": "int",
+            "value": "1"
+          }
+        ],
+        [
+          {
+            "name": "v",
+            "type": "int",
+            "value": "256"
+          }
+        ]
+      ]
+    },
+    {
+      "id": "C5",
+      "description": "present-but-empty differs from absent",
+      "payloads": [
+        [
+          {
+            "name": "a",
+            "type": "string",
+            "value": ""
+          }
+        ],
+        []
+      ]
+    }
+  ],
+  "rejection": [
+    {
+      "id": "D1",
+      "description": "float values do not exist in the type system and must be rejected",
+      "payload": [
+        {
+          "name": "f",
+          "type": "float",
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "id": "D1b",
+      "description": "a non-integral int literal must be rejected",
+      "payload": [
+        {
+          "name": "f",
+          "type": "int",
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "id": "D2",
+      "description": "nested objects are not allowed in Part 1",
+      "payload": [
+        {
+          "name": "o",
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "id": "D2b",
+      "description": "arrays are not allowed in Part 1",
+      "payload": [
+        {
+          "name": "a",
+          "type": "array"
+        }
+      ]
+    },
+    {
+      "id": "D3",
+      "description": "non-NFC string value (e + combining acute) must be rejected, not normalized",
+      "payload": [
+        {
+          "name": "s",
+          "type": "string",
+          "valueHex": "0x65cc81"
+        }
+      ]
+    },
+    {
+      "id": "D3b",
+      "description": "invalid UTF-8 string value must be rejected",
+      "payload": [
+        {
+          "name": "s",
+          "type": "string",
+          "valueHex": "0xff"
+        }
+      ]
+    },
+    {
+      "id": "D4",
+      "description": "duplicate field names must be rejected",
+      "payload": [
+        {
+          "name": "a",
+          "type": "int",
+          "value": "1"
+        },
+        {
+          "name": "a",
+          "type": "int",
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "id": "D5",
+      "description": "negative integers must be rejected (unsigned 256-bit only)",
+      "payload": [
+        {
+          "name": "n",
+          "type": "int",
+          "value": "-1"
+        }
+      ]
+    },
+    {
+      "id": "D6",
+      "description": "integers beyond 2^256-1 must be rejected",
+      "payload": [
+        {
+          "name": "n",
+          "type": "int",
+          "value": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+        }
+      ]
+    },
+    {
+      "id": "D7",
+      "description": "empty field name must be rejected",
+      "payload": [
+        {
+          "type": "bool",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "D8",
+      "description": "non-NFC field name must be rejected",
+      "payload": [
+        {
+          "nameHex": "0x65cc81",
+          "type": "bool",
+          "value": true
+        }
+      ]
+    }
+  ]
+}
