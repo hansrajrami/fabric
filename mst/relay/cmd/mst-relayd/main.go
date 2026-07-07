@@ -18,6 +18,7 @@ import (
 	"github.com/hansrajrami/fabric/mst/relay/config"
 	"github.com/hansrajrami/fabric/mst/relay/evm"
 	"github.com/hansrajrami/fabric/mst/relay/fabricwb"
+	"github.com/hansrajrami/fabric/mst/relay/gwsource"
 	"github.com/hansrajrami/fabric/mst/relay/outbox"
 	"github.com/hansrajrami/fabric/mst/relay/sender"
 )
@@ -61,7 +62,7 @@ func run() error {
 	defer client.Close()
 	log.Info("EVM client ready", "sender", client.Sender(), "contract", cfg.EVM.ContractAddress)
 
-	source, err := capture.NewGatewaySource(cfg.GatewayConfig())
+	source, err := gwsource.New(cfg.GatewayConfig(), log)
 	if err != nil {
 		return err
 	}

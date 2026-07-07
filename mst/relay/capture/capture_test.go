@@ -7,11 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hyperledger/fabric-protos-go-apiv2/common"
-
 	"github.com/hansrajrami/fabric/mst/canonical"
-	"github.com/hansrajrami/fabric/mst/relay/internal/blocktest"
 	"github.com/hansrajrami/fabric/mst/relay/outbox"
+	"github.com/hansrajrami/fabric/mst/relay/txmodel"
 )
 
 func txID(seed string) string {
@@ -41,12 +39,18 @@ func validPayload(t *testing.T) []byte {
 	return enc
 }
 
+func optedTx(id string, ts uint64, valid bool, chaincode string, payload []byte) txmodel.Tx {
+	return txmodel.Tx{
+		TxID: txID(id), ChannelID: "mychannel", TimestampUnix: ts, Valid: valid,
+		Events: []txmodel.Event{{ChaincodeID: chaincode, EventName: "MSTProofRequest", Payload: payload}},
+	}
+}
+
 // run drains a finite StaticSource through the service; the "stream ended
 // unexpectedly" error is the expected terminal state for a finite source.
-func run(t *testing.T, svc *Service, blocks ...*common.Block) {
+func run(t *testing.T, svc *Service, blocks ...*txmodel.Block) {
 	t.Helper()
-	src := &StaticSource{BlocksList: blocks}
-	svc.source = src
+	svc.source = &StaticSource{BlocksList: blocks}
 	err := svc.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "stream ended") {
 		t.Fatalf("finite source must end with stream-ended, got %v", err)
@@ -57,31 +61,26 @@ func TestCaptureEndToEnd(t *testing.T) {
 	store := openStore(t)
 	payload := validPayload(t)
 
-	blocks := []*common.Block{
-		blocktest.Build(t, 0,
+	blocks := []*txmodel.Block{
+		{Number: 0, Txs: []txmodel.Tx{
 			// opted-in, valid -> captured
-			blocktest.TxSpec{TxID: txID("a1"), ChannelID: "mychannel", Timestamp: 1720000001, Valid: true,
-				ChaincodeID: "mst-example", EventName: "MSTProofRequest", EventPayload: payload},
+			optedTx("a1", 1720000001, true, "mst-example", payload),
 			// opted-in but invalid tx -> skipped
-			blocktest.TxSpec{TxID: txID("a2"), ChannelID: "mychannel", Timestamp: 1720000002, Valid: false,
-				ChaincodeID: "mst-example", EventName: "MSTProofRequest", EventPayload: payload},
-		),
-		blocktest.Build(t, 1,
+			optedTx("a2", 1720000002, false, "mst-example", payload),
+		}},
+		{Number: 1, Txs: []txmodel.Tx{
 			// not opted in -> skipped
-			blocktest.TxSpec{TxID: txID("b1"), ChannelID: "mychannel", Timestamp: 1720000003, Valid: true,
-				ChaincodeID: "mst-example", EventName: "SomethingElse", EventPayload: payload},
+			{TxID: txID("b1"), ChannelID: "mychannel", TimestampUnix: 1720000003, Valid: true,
+				Events: []txmodel.Event{{ChaincodeID: "mst-example", EventName: "SomethingElse", Payload: payload}}},
 			// excluded chaincode (echo-loop guard) -> skipped
-			blocktest.TxSpec{TxID: txID("b2"), ChannelID: "mychannel", Timestamp: 1720000004, Valid: true,
-				ChaincodeID: "mst-anchor-status", EventName: "MSTProofRequest", EventPayload: payload},
-		),
-		blocktest.Build(t, 2,
+			optedTx("b2", 1720000004, true, "mst-anchor-status", payload),
+		}},
+		{Number: 2, Txs: []txmodel.Tx{
 			// malformed payload -> quarantined, stream continues
-			blocktest.TxSpec{TxID: txID("c1"), ChannelID: "mychannel", Timestamp: 1720000005, Valid: true,
-				ChaincodeID: "mst-example", EventName: "MSTProofRequest", EventPayload: []byte{0xFF, 0xFF}},
+			optedTx("c1", 1720000005, true, "mst-example", []byte{0xFF, 0xFF}),
 			// opted-in, valid -> captured
-			blocktest.TxSpec{TxID: txID("c2"), ChannelID: "mychannel", Timestamp: 1720000006, Valid: true,
-				ChaincodeID: "mst-example", EventName: "MSTProofRequest", EventPayload: payload},
-		),
+			optedTx("c2", 1720000006, true, "mst-example", payload),
+		}},
 	}
 
 	svc := New(nil, store, Config{ExcludeChaincodes: []string{"mst-anchor-status"}}, nil)
@@ -134,13 +133,12 @@ func TestCaptureRestartExactlyOnce(t *testing.T) {
 	store := openStore(t)
 	payload := validPayload(t)
 
-	mkBlock := func(n uint64, seed string) *common.Block {
-		return blocktest.Build(t, n,
-			blocktest.TxSpec{TxID: txID(seed), ChannelID: "ch", Timestamp: 1720000000 + int64(n), Valid: true,
-				ChaincodeID: "mst-example", EventName: "MSTProofRequest", EventPayload: payload},
-		)
+	mkBlock := func(n uint64, seed string) *txmodel.Block {
+		return &txmodel.Block{Number: n, Txs: []txmodel.Tx{
+			optedTx(seed, 1720000000+n, true, "mst-example", payload),
+		}}
 	}
-	all := []*common.Block{mkBlock(0, "f0"), mkBlock(1, "f1"), mkBlock(2, "f2"), mkBlock(3, "f3"), mkBlock(4, "f4")}
+	all := []*txmodel.Block{mkBlock(0, "f0"), mkBlock(1, "f1"), mkBlock(2, "f2"), mkBlock(3, "f3"), mkBlock(4, "f4")}
 
 	// First run "crashes" after block 2 (finite source with only 3 blocks).
 	svc := New(nil, store, Config{}, nil)
@@ -175,11 +173,9 @@ func TestCaptureRestartExactlyOnce(t *testing.T) {
 
 func TestCaptureRedeliveredBlockIsIdempotent(t *testing.T) {
 	store := openStore(t)
-	payload := validPayload(t)
-	block := blocktest.Build(t, 9,
-		blocktest.TxSpec{TxID: txID("aa"), ChannelID: "ch", Timestamp: 1720000009, Valid: true,
-			ChaincodeID: "cc", EventName: "MSTProofRequest", EventPayload: payload},
-	)
+	block := &txmodel.Block{Number: 9, Txs: []txmodel.Tx{
+		optedTx("aa", 1720000009, true, "cc", validPayload(t)),
+	}}
 
 	svc := New(nil, store, Config{}, nil)
 	if err := svc.ProcessBlock(block); err != nil {
@@ -195,6 +191,24 @@ func TestCaptureRedeliveredBlockIsIdempotent(t *testing.T) {
 	}
 	if len(pending) != 1 {
 		t.Fatalf("redelivery duplicated: %d", len(pending))
+	}
+}
+
+func TestCaptureMissingTimestampQuarantined(t *testing.T) {
+	store := openStore(t)
+	block := &txmodel.Block{Number: 1, Txs: []txmodel.Tx{
+		optedTx("ee", 0, true, "cc", validPayload(t)), // no timestamp
+	}}
+	svc := New(nil, store, Config{}, nil)
+	if err := svc.ProcessBlock(block); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := store.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Quarantined != 1 || stats.CountByStatus[outbox.StatusPending] != 0 {
+		t.Fatalf("stats: %+v", stats)
 	}
 }
 

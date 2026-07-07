@@ -1,8 +1,12 @@
 // Package capture turns committed, opted-in Fabric transactions into
-// commitments in the durable outbox (spec section 8). It consumes blocks that
-// are already committed — delivered by the Fabric Gateway block-event API —
-// so it is structurally off the commit path: nothing here can slow, block,
-// or endanger Fabric's commit.
+// commitments in the durable outbox (spec section 8). It consumes blocks
+// that are already committed, so it is structurally off the commit path:
+// nothing here can slow, block, or endanger Fabric's commit.
+//
+// The package is deliberately proto-free (it consumes the parsed txmodel),
+// so the same capture core runs in both deployments: the standalone relayer
+// (blocks parsed from the Fabric Gateway by relay/gwsource) and embedded
+// inside the peer binary (blocks parsed from the peer's own ledger).
 package capture
 
 import (
@@ -11,18 +15,17 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/hyperledger/fabric-protos-go-apiv2/common"
-
 	"github.com/hansrajrami/fabric/mst/canonical"
 	"github.com/hansrajrami/fabric/mst/fabric-chaincode/proofhelper"
-	"github.com/hansrajrami/fabric/mst/relay/blockparse"
 	"github.com/hansrajrami/fabric/mst/relay/outbox"
+	"github.com/hansrajrami/fabric/mst/relay/txmodel"
 )
 
-// Source delivers committed blocks starting at a given block number. The
-// returned channel closes when ctx ends or the underlying stream terminates.
+// Source delivers parsed committed blocks starting at a given block number.
+// The returned channel closes when ctx ends or the underlying stream
+// terminates.
 type Source interface {
-	Blocks(ctx context.Context, startBlock uint64) (<-chan *common.Block, error)
+	Blocks(ctx context.Context, startBlock uint64) (<-chan *txmodel.Block, error)
 }
 
 // Config tunes the capture service.
@@ -81,10 +84,10 @@ func (s *Service) Run(ctx context.Context) error {
 
 	for block := range blocks {
 		if err := s.ProcessBlock(block); err != nil {
-			// Only storage failures land here; parsing problems are
+			// Only storage failures land here; malformed payloads are
 			// quarantined inside ProcessBlock. A storage failure is not
 			// survivable — stop and let the operator/supervisor intervene.
-			return fmt.Errorf("capture: block %d: %w", block.GetHeader().GetNumber(), err)
+			return fmt.Errorf("capture: block %d: %w", block.Number, err)
 		}
 	}
 	if ctx.Err() != nil {
@@ -97,16 +100,11 @@ func (s *Service) Run(ctx context.Context) error {
 // writes their commitments plus the advanced checkpoint atomically. It is
 // idempotent: redelivered blocks insert nothing and never regress the
 // checkpoint.
-func (s *Service) ProcessBlock(block *common.Block) error {
-	parsed, err := blockparse.Parse(block)
-	if err != nil {
-		return err
-	}
-
+func (s *Service) ProcessBlock(parsed *txmodel.Block) error {
 	var entries []*outbox.Entry
 	for i := range parsed.Txs {
 		tx := &parsed.Txs[i]
-		if !tx.Valid() {
+		if !tx.Valid {
 			continue // endorsement-failed / MVCC-conflict txs are not real commits
 		}
 		entry, reason, err := s.buildEntry(tx, parsed.Number)
@@ -138,8 +136,8 @@ func (s *Service) ProcessBlock(block *common.Block) error {
 
 // buildEntry returns the outbox entry for an opted-in transaction, (nil, "",
 // nil) when the tx did not opt in, or an error with a quarantine reason.
-func (s *Service) buildEntry(tx *blockparse.Tx, blockNumber uint64) (*outbox.Entry, string, error) {
-	var event *blockparse.Event
+func (s *Service) buildEntry(tx *txmodel.Tx, blockNumber uint64) (*outbox.Entry, string, error) {
+	var event *txmodel.Event
 	for i := range tx.Events {
 		ev := &tx.Events[i]
 		if ev.EventName != proofhelper.EventName {
@@ -192,7 +190,7 @@ func (s *Service) buildEntry(tx *blockparse.Tx, blockNumber uint64) (*outbox.Ent
 	}, "", nil
 }
 
-func (s *Service) quarantine(tx *blockparse.Tx, blockNumber uint64, reason string) {
+func (s *Service) quarantine(tx *txmodel.Tx, blockNumber uint64, reason string) {
 	txID, err := canonical.ParseFabricTxID(tx.TxID)
 	if err != nil {
 		// No usable key; synthesize one from the raw id string so the record
@@ -214,3 +212,30 @@ func (s *Service) quarantine(tx *blockparse.Tx, blockNumber uint64, reason strin
 // Processed reports how many blocks this instance has handled (for tests and
 // metrics).
 func (s *Service) Processed() uint64 { return s.processed }
+
+// StaticSource replays a fixed slice of parsed blocks; used in tests and for
+// offline reprocessing.
+type StaticSource struct {
+	BlocksList []*txmodel.Block
+}
+
+var _ Source = (*StaticSource)(nil)
+
+// Blocks emits every stored block with number >= startBlock, then closes.
+func (s *StaticSource) Blocks(ctx context.Context, startBlock uint64) (<-chan *txmodel.Block, error) {
+	ch := make(chan *txmodel.Block)
+	go func() {
+		defer close(ch)
+		for _, b := range s.BlocksList {
+			if b.Number < startBlock {
+				continue
+			}
+			select {
+			case ch <- b:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return ch, nil
+}

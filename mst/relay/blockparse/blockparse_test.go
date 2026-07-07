@@ -7,7 +7,6 @@ import (
 	"github.com/hansrajrami/fabric/mst/relay/blockparse"
 	"github.com/hansrajrami/fabric/mst/relay/internal/blocktest"
 	"github.com/hyperledger/fabric-protos-go-apiv2/common"
-	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
 )
 
 func txID(seed string) string {
@@ -44,7 +43,7 @@ func TestParseExtractsEndorserTransactions(t *testing.T) {
 	if tx0.TxID != txID("a1") || tx0.ChannelID != "mychannel" || tx0.TimestampUnix != 1720000001 {
 		t.Fatalf("tx0: %+v", tx0)
 	}
-	if !tx0.Valid() {
+	if !tx0.Valid {
 		t.Fatal("tx0 must be valid")
 	}
 	if len(tx0.Events) != 1 || tx0.Events[0].EventName != "MSTProofRequest" ||
@@ -52,11 +51,8 @@ func TestParseExtractsEndorserTransactions(t *testing.T) {
 		t.Fatalf("tx0 events: %+v", tx0.Events)
 	}
 
-	if parsed.Txs[1].Valid() {
+	if parsed.Txs[1].Valid {
 		t.Fatal("tx1 must be invalid (MVCC conflict)")
-	}
-	if parsed.Txs[1].ValidationCode != peer.TxValidationCode_MVCC_READ_CONFLICT {
-		t.Fatalf("tx1 code: %v", parsed.Txs[1].ValidationCode)
 	}
 	if len(parsed.Txs[2].Events) != 0 {
 		t.Fatal("tx2 must have no events")
@@ -108,11 +104,8 @@ func TestParseMissingFilterMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Txs[0].Valid() {
+	if parsed.Txs[0].Valid {
 		t.Fatal("missing metadata must not read as VALID")
-	}
-	if parsed.Txs[0].ValidationCode != peer.TxValidationCode_INVALID_OTHER_REASON {
-		t.Fatalf("code: %v", parsed.Txs[0].ValidationCode)
 	}
 }
 

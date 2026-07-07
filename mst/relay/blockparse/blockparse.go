@@ -1,13 +1,15 @@
 // Package blockparse extracts the transaction facts the capture service
-// needs from committed Fabric blocks: tx id, channel, client-asserted
-// timestamp, validation code, and chaincode events.
+// needs from committed Fabric blocks delivered by the Fabric Gateway
+// (fabric-protos-go-apiv2): tx id, channel, client-asserted timestamp,
+// validity, and chaincode events.
 //
-// It is a self-contained port (to fabric-protos-go-apiv2) of the peer's own
-// gateway event extraction (internal/pkg/gateway/event/{block,transaction}.go
-// in fabric release-2.5). Importing github.com/hyperledger/fabric itself is
-// deliberately avoided: its protoutil works on the old proto module while the
-// fabric-gateway client delivers apiv2 blocks, and the module drags a very
-// large dependency graph into the relayer.
+// It is a self-contained port of the peer's own gateway event extraction
+// (internal/pkg/gateway/event/{block,transaction}.go in fabric release-2.5).
+// Importing github.com/hyperledger/fabric itself is deliberately avoided:
+// its protoutil works on the old proto module while the fabric-gateway
+// client delivers apiv2 blocks, and the module drags a very large dependency
+// graph into the relayer. The output is the proto-free txmodel, shared with
+// the in-peer embedded parser.
 package blockparse
 
 import (
@@ -16,62 +18,30 @@ import (
 	"github.com/hyperledger/fabric-protos-go-apiv2/common"
 	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/hansrajrami/fabric/mst/relay/txmodel"
 )
-
-// Event is one chaincode event of a transaction.
-type Event struct {
-	ChaincodeID string
-	EventName   string
-	Payload     []byte
-}
-
-// Tx is one endorser transaction of a committed block.
-type Tx struct {
-	TxID           string
-	ChannelID      string
-	TimestampUnix  uint64 // ChannelHeader.Timestamp (client-asserted, in the signed envelope)
-	ValidationCode peer.TxValidationCode
-	Events         []Event
-}
-
-// Valid reports whether the transaction committed successfully.
-func (t *Tx) Valid() bool { return t.ValidationCode == peer.TxValidationCode_VALID }
-
-// BadEnvelope records a block entry that could not be parsed. Surfacing these
-// (instead of failing the whole block or silently skipping) lets the capture
-// service quarantine poison pills without wedging the stream.
-type BadEnvelope struct {
-	Index int
-	Err   error
-}
-
-// Block is the parse result for one committed block.
-type Block struct {
-	Number uint64
-	Txs    []Tx
-	Bad    []BadEnvelope
-}
 
 // Parse extracts all endorser transactions from a committed block. Non-endorser
 // entries (config transactions etc.) are ignored. Unparseable envelopes are
 // reported in Bad rather than failing the block.
-func Parse(block *common.Block) (*Block, error) {
+func Parse(block *common.Block) (*txmodel.Block, error) {
 	if block == nil {
 		return nil, fmt.Errorf("blockparse: nil block")
 	}
-	out := &Block{Number: block.GetHeader().GetNumber()}
+	out := &txmodel.Block{Number: block.GetHeader().GetNumber()}
 
 	statusCodes := transactionsFilter(block)
 	for i, envelopeBytes := range block.GetData().GetData() {
 		tx, isEndorser, err := parseEnvelope(envelopeBytes)
 		if err != nil {
-			out.Bad = append(out.Bad, BadEnvelope{Index: i, Err: err})
+			out.Bad = append(out.Bad, txmodel.BadEnvelope{Index: i, Err: err})
 			continue
 		}
 		if !isEndorser {
 			continue
 		}
-		tx.ValidationCode = statusCode(statusCodes, i)
+		tx.Valid = statusCode(statusCodes, i) == peer.TxValidationCode_VALID
 		out.Txs = append(out.Txs, *tx)
 	}
 	return out, nil
@@ -96,7 +66,7 @@ func statusCode(filter []byte, txIndex int) peer.TxValidationCode {
 	return peer.TxValidationCode(filter[txIndex])
 }
 
-func parseEnvelope(envelopeBytes []byte) (*Tx, bool, error) {
+func parseEnvelope(envelopeBytes []byte) (*txmodel.Tx, bool, error) {
 	envelope := &common.Envelope{}
 	if err := proto.Unmarshal(envelopeBytes, envelope); err != nil {
 		return nil, false, fmt.Errorf("unmarshal envelope: %w", err)
@@ -113,7 +83,7 @@ func parseEnvelope(envelopeBytes []byte) (*Tx, bool, error) {
 		return nil, false, nil
 	}
 
-	tx := &Tx{
+	tx := &txmodel.Tx{
 		TxID:      channelHeader.GetTxId(),
 		ChannelID: channelHeader.GetChannelId(),
 	}
@@ -133,13 +103,13 @@ func parseEnvelope(envelopeBytes []byte) (*Tx, bool, error) {
 // ProposalResponsePayload -> ChaincodeAction -> ChaincodeEvent. Individual
 // undecodable actions are skipped, matching the peer's gateway behavior
 // (they are not endorser chaincode actions).
-func readChaincodeEvents(payloadData []byte) ([]Event, error) {
+func readChaincodeEvents(payloadData []byte) ([]txmodel.Event, error) {
 	transaction := &peer.Transaction{}
 	if err := proto.Unmarshal(payloadData, transaction); err != nil {
 		return nil, fmt.Errorf("unmarshal transaction: %w", err)
 	}
 
-	var events []Event
+	var events []txmodel.Event
 	for _, action := range transaction.GetActions() {
 		actionPayload := &peer.ChaincodeActionPayload{}
 		if err := proto.Unmarshal(action.GetPayload(), actionPayload); err != nil {
@@ -160,7 +130,7 @@ func readChaincodeEvents(payloadData []byte) ([]Event, error) {
 		if event.GetChaincodeId() == "" || event.GetEventName() == "" {
 			continue
 		}
-		events = append(events, Event{
+		events = append(events, txmodel.Event{
 			ChaincodeID: event.GetChaincodeId(),
 			EventName:   event.GetEventName(),
 			Payload:     event.GetPayload(),

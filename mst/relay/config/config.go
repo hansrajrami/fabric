@@ -12,6 +12,7 @@ import (
 
 	"github.com/hansrajrami/fabric/mst/relay/capture"
 	"github.com/hansrajrami/fabric/mst/relay/evm"
+	"github.com/hansrajrami/fabric/mst/relay/gwsource"
 	"github.com/hansrajrami/fabric/mst/relay/sender"
 )
 
@@ -100,8 +101,8 @@ func appendUnique(list []string, v string) []string {
 }
 
 // GatewayConfig maps to the capture source configuration.
-func (f *File) GatewayConfig() capture.GatewayConfig {
-	return capture.GatewayConfig{
+func (f *File) GatewayConfig() gwsource.Config {
+	return gwsource.Config{
 		Endpoint:           f.Fabric.Endpoint,
 		TLSCACertPath:      f.Fabric.TLSCACertPath,
 		ServerNameOverride: f.Fabric.ServerNameOverride,
