@@ -82,7 +82,7 @@ func run() error {
 
 	if cfg.MetricsAddr != "" {
 		mux := http.NewServeMux()
-		mux.Handle("/metrics", sender.MetricsHandler(store))
+		mux.Handle("/metrics", sender.MetricsHandler(store, client))
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			if _, err := store.Stats(); err != nil {
 				http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -129,6 +129,11 @@ func run() error {
 			}
 		}
 	}()
+
+	// Gas-balance watcher: running out of gas is the most likely anchoring
+	// outage and is otherwise silent (entries just queue in the outbox).
+	watcher := sender.NewBalanceWatcher(client, sender.GweiToWei(cfg.EVM.MinBalanceGwei), log)
+	go watcher.Run(ctx, 0)
 
 	senderErr := make(chan error, 1)
 	go func() { senderErr <- snd.Run(ctx) }()

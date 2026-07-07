@@ -853,6 +853,11 @@ mst:
         tipCapGwei: 0
         # Confirmations before an anchor counts as final (reorg guard).
         confirmations: 1
+        # Log loudly (once a minute) while the relayer's gas balance is
+        # below this many gwei; 0 disables the watcher. The balance is
+        # always exposed on the metrics endpoint as
+        # mst_relayer_balance_gwei regardless.
+        minBalanceGwei: 0
     sender:
         # 0 = default (4)
         workers: 0

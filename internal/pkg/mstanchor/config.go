@@ -56,6 +56,10 @@ type Config struct {
 		GasLimit        uint64
 		TipCapGwei      uint64
 		Confirmations   uint64
+		// MinBalanceGwei: log loudly when the relayer's gas balance drops
+		// below this (0 disables the watcher; the metrics gauge is always
+		// exposed regardless).
+		MinBalanceGwei uint64
 	}
 
 	Sender struct {
@@ -119,6 +123,7 @@ func FromViper(v *viper.Viper) (*Config, error) {
 	c.EVM.GasLimit = uint64(v.GetInt64("mst.evm.gasLimit"))
 	c.EVM.TipCapGwei = uint64(v.GetInt64("mst.evm.tipCapGwei"))
 	c.EVM.Confirmations = uint64(v.GetInt64("mst.evm.confirmations"))
+	c.EVM.MinBalanceGwei = uint64(v.GetInt64("mst.evm.minBalanceGwei"))
 
 	c.Sender.Workers = v.GetInt("mst.sender.workers")
 	c.Sender.CadenceMode = v.GetString("mst.sender.cadenceMode")

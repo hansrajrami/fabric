@@ -64,6 +64,9 @@ type File struct {
 		GasLimit        uint64 `json:"gasLimit"`
 		TipCapGwei      uint64 `json:"tipCapGwei"`
 		Confirmations   uint64 `json:"confirmations"`
+		// MinBalanceGwei: log loudly when the relayer's gas balance drops
+		// below this (0 disables the watcher; the metrics gauge is always on).
+		MinBalanceGwei uint64 `json:"minBalanceGwei"`
 	} `json:"evm"`
 
 	Sender struct {

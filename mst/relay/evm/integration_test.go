@@ -134,6 +134,15 @@ func TestIntegrationClientAndSender(t *testing.T) {
 	copy(txID[:], []byte("integration-test-tx-000000000001"))
 	copy(commitment[:], []byte("integration-test-commitment-0001"))
 
+	// The funded dev account must report a positive balance.
+	balance, err := client.Balance(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if balance.Sign() <= 0 {
+		t.Fatalf("dev account balance must be positive, got %s", balance)
+	}
+
 	// Not anchored yet.
 	rec, err := client.GetAnchor(ctx, txID)
 	if err != nil {

@@ -456,7 +456,7 @@ func TestMetricsHandler(t *testing.T) {
 	store := openStore(t)
 	seedPending(t, store, 1, 2)
 	rec := httptest.NewRecorder()
-	MetricsHandler(store).ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	MetricsHandler(store, nil).ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	body := rec.Body.String()
 	if !strings.Contains(body, `mst_outbox_entries{status="PENDING"} 2`) {
 		t.Fatalf("metrics body:\n%s", body)

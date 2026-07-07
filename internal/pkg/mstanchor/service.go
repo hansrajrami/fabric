@@ -97,6 +97,17 @@ func (s *Service) Start() error {
 		s.startMetrics()
 	}
 
+	// Gas-balance watcher: an underfunded relayer account stalls anchoring
+	// safely but silently (entries queue in the outboxes) — make it loud.
+	watcher := sender.NewBalanceWatcher(client, sender.GweiToWei(s.cfg.EVM.MinBalanceGwei), nil)
+	if watcher.Enabled() {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			watcher.Run(ctx, 0)
+		}()
+	}
+
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -242,8 +253,12 @@ func (s *Service) startMetrics() {
 		s.mu.Unlock()
 		for _, p := range pipelines {
 			fmt.Fprintf(w, "# channel %s\n", p.channelID)
-			sender.MetricsHandler(p.store).ServeHTTP(w, r)
+			sender.MetricsHandler(p.store, nil).ServeHTTP(w, r)
 		}
+		// The EVM client (and thus the gas balance) is shared across all
+		// channel pipelines: emit the gauge exactly once per scrape.
+		fmt.Fprintf(w, "# relayer account\n")
+		sender.BalanceMetricsHandler(s.client).ServeHTTP(w, r)
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")

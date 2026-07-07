@@ -110,6 +110,18 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 // Sender returns the relayer's EVM address.
 func (c *Client) Sender() string { return c.sender.Hex() }
 
+// Balance returns the relayer account's current balance in wei. The account
+// pays gas for every anchor; when it runs dry, anchoring stalls safely into
+// the outbox but silently — the sender's balance watcher and metrics gauge
+// exist to make that visible before it happens.
+func (c *Client) Balance(ctx context.Context) (*big.Int, error) {
+	balance, err := c.eth.BalanceAt(ctx, c.sender, nil)
+	if err != nil {
+		return nil, fmt.Errorf("evm: balance of %s: %w", c.sender.Hex(), err)
+	}
+	return balance, nil
+}
+
 // Close releases the RPC connection.
 func (c *Client) Close() { c.eth.Close() }
 

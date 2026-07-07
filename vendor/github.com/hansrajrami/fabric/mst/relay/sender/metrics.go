@@ -1,6 +1,7 @@
 package sender
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -14,8 +15,10 @@ import (
 // format (hand-rolled: the format is three trivial line types, not worth a
 // client library dependency for a relay daemon). A growing PENDING count or
 // oldest-age means MST needs attention — Fabric is unaffected either way.
-func MetricsHandler(store outbox.Store) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+// balance may be nil; when wired, the relayer's gas balance is exposed as a
+// gauge (in gwei — wei magnitudes exceed float64 precision).
+func MetricsHandler(store outbox.Store, balance BalanceReader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		stats, err := store.Stats()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -40,7 +43,38 @@ func MetricsHandler(store outbox.Store) http.Handler {
 		b.WriteString("# TYPE mst_outbox_quarantined_total gauge\n")
 		fmt.Fprintf(&b, "mst_outbox_quarantined_total %d\n", stats.Quarantined)
 
+		if balance != nil {
+			writeBalanceMetric(&b, r, balance)
+		}
+
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = w.Write([]byte(b.String()))
 	})
+}
+
+// BalanceMetricsHandler serves only the relayer balance gauge. Used by the
+// embedded peer mode, where one EVM client is shared across several
+// per-channel outbox handlers and the gauge must be emitted exactly once.
+func BalanceMetricsHandler(balance BalanceReader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b strings.Builder
+		writeBalanceMetric(&b, r, balance)
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		_, _ = w.Write([]byte(b.String()))
+	})
+}
+
+func writeBalanceMetric(b *strings.Builder, r *http.Request, balance BalanceReader) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	wei, err := balance.Balance(ctx)
+	cancel()
+	if err != nil {
+		// A scrape must never fail because the RPC hiccuped; the gauge
+		// simply goes absent (which alerting can also key on).
+		fmt.Fprintf(b, "# mst_relayer_balance_gwei unavailable: %v\n", err)
+		return
+	}
+	b.WriteString("# HELP mst_relayer_balance_gwei Relayer gas account balance (gwei). Fund before it hits zero or anchoring stalls.\n")
+	b.WriteString("# TYPE mst_relayer_balance_gwei gauge\n")
+	fmt.Fprintf(b, "mst_relayer_balance_gwei %g\n", weiToGwei(wei))
 }

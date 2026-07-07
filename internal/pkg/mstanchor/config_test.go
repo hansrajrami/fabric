@@ -49,6 +49,7 @@ func TestFullConfig(t *testing.T) {
 	v.Set("mst.evm.rpcURL", "http://127.0.0.1:8545")
 	v.Set("mst.evm.contractAddress", "0xabc")
 	v.Set("mst.evm.confirmations", 3)
+	v.Set("mst.evm.minBalanceGwei", 500000)
 	v.Set("mst.sender.cadenceMode", "batch")
 	v.Set("mst.sender.cadenceN", 10)
 	v.Set("mst.sender.cadenceMaxWait", "30s")
@@ -71,6 +72,7 @@ func TestFullConfig(t *testing.T) {
 	require.Equal(t, 10, sc.Cadence.N)
 	require.Equal(t, 30*time.Second, sc.Cadence.MaxWait)
 	require.Equal(t, uint64(3), sc.Confirmations)
+	require.Equal(t, uint64(500000), cfg.EVM.MinBalanceGwei)
 
 	require.Equal(t, uint64(5), cfg.CaptureConfig().DefaultStartBlock)
 }

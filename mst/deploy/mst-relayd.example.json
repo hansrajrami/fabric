@@ -19,7 +19,8 @@
     "chainID": 0,
     "gasLimit": 0,
     "tipCapGwei": 0,
-    "confirmations": 1
+    "confirmations": 1,
+    "minBalanceGwei": 0
   },
   "sender": {
     "workers": 4,
