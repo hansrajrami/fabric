@@ -244,6 +244,52 @@ func runStoreSuite(t *testing.T, open func(t *testing.T) Store) {
 		}
 	})
 
+	t.Run("BatchRecordsRoundTrip", func(t *testing.T) {
+		s := open(t)
+		root := txid(0xBB)
+		members := [][32]byte{txid(1), txid(2), txid(3)}
+
+		got, err := s.GetBatch(root)
+		if err != nil || got != nil {
+			t.Fatalf("unknown batch: %v %v", got, err)
+		}
+		if err := s.PutBatch(root, members); err != nil {
+			t.Fatal(err)
+		}
+		got, err = s.GetBatch(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 3 || got[0] != members[0] || got[2] != members[2] {
+			t.Fatalf("batch members: %v", got)
+		}
+		// Overwriting the same root is harmless.
+		if err := s.PutBatch(root, members); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("EntryBatchRootPersists", func(t *testing.T) {
+		s := open(t)
+		if _, err := s.PutBlock([]*Entry{entry(1, 1)}, 2); err != nil {
+			t.Fatal(err)
+		}
+		root := txid(0xBB)
+		if _, err := s.Transition(txid(1), StatusPending, StatusSubmitted, func(e *Entry) {
+			e.BatchRoot = root
+			e.EVMTxHash = txid(0xEE)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		e, err := s.Get(txid(1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.BatchRoot != root {
+			t.Fatalf("batch root not persisted: %x", e.BatchRoot)
+		}
+	})
+
 	t.Run("ClosedStoreErrors", func(t *testing.T) {
 		s := open(t)
 		if err := s.Close(); err != nil {

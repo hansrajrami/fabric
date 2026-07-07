@@ -148,6 +148,29 @@ func (c *Client) SubmitAnchor(ctx context.Context, fabricTxID, commitment [32]by
 	return c.submit(ctx, packAnchor(fabricTxID, commitment, blockNumber), c.cfg.GasLimit)
 }
 
+// SubmitAnchorRoot sends anchorRoot(root, leafCount) — one transaction
+// anchoring a whole Merkle batch.
+func (c *Client) SubmitAnchorRoot(ctx context.Context, root [32]byte, leafCount uint64) ([32]byte, error) {
+	return c.submit(ctx, packAnchorRoot(root, leafCount), c.cfg.GasLimit)
+}
+
+// GetRoot reads the batch-root record; nil when the root is not anchored.
+func (c *Client) GetRoot(ctx context.Context, root [32]byte) (*RootRecord, error) {
+	data := packGetRoot(root)
+	ret, err := c.eth.CallContract(ctx, ethereum.CallMsg{To: &c.contract, Data: data}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("evm: getRoot call: %w", err)
+	}
+	rec, err := unpackGetRoot(ret)
+	if err != nil {
+		return nil, err
+	}
+	if !rec.Exists {
+		return nil, nil
+	}
+	return rec, nil
+}
+
 // SubmitAnchorBatch sends anchorBatch for several entries in one transaction.
 func (c *Client) SubmitAnchorBatch(ctx context.Context, ids, commitments [][32]byte, blockNumbers []uint64) ([32]byte, error) {
 	data, err := packAnchorBatch(ids, commitments, blockNumbers)

@@ -3,6 +3,8 @@ package sender
 import (
 	"fmt"
 	"time"
+
+	"github.com/robfig/cron/v3"
 )
 
 // CadenceMode selects when pending commitments are flushed to MST
@@ -18,6 +20,9 @@ const (
 	CadenceBatch CadenceMode = "batch"
 	// CadenceInterval flushes on a fixed schedule.
 	CadenceInterval CadenceMode = "interval"
+	// CadenceCron flushes on a standard 5-field cron schedule (e.g.
+	// "0 * * * *" = hourly, "*/15 * * * *" = every 15 minutes).
+	CadenceCron CadenceMode = "cron"
 )
 
 // Cadence is the flush policy.
@@ -31,6 +36,11 @@ type Cadence struct {
 	// if the threshold is never reached (default 1 minute). Guarantees
 	// progress when traffic stops just below N.
 	MaxWait time.Duration
+	// Cron is the standard 5-field cron expression for CadenceCron.
+	Cron string
+
+	schedule cron.Schedule
+	nextFire time.Time
 }
 
 // Validate normalizes and checks the policy.
@@ -49,6 +59,12 @@ func (c *Cadence) Validate() error {
 		if c.Interval <= 0 {
 			return fmt.Errorf("sender: interval cadence requires a positive interval")
 		}
+	case CadenceCron:
+		schedule, err := cron.ParseStandard(c.Cron)
+		if err != nil {
+			return fmt.Errorf("sender: invalid cron expression %q: %w", c.Cron, err)
+		}
+		c.schedule = schedule
 	default:
 		return fmt.Errorf("sender: unknown cadence mode %q", c.Mode)
 	}
@@ -58,15 +74,33 @@ func (c *Cadence) Validate() error {
 // pollInterval is how often the sender re-examines the outbox. Per-tx uses a
 // tight poll for low latency; interval mode polls at its own period.
 func (c *Cadence) pollInterval(base time.Duration) time.Duration {
-	if c.Mode == CadenceInterval {
+	switch c.Mode {
+	case CadenceInterval:
 		return c.Interval
+	case CadenceCron:
+		return time.Second // cheap check; fires only at schedule boundaries
+	default:
+		return base
 	}
-	return base
 }
 
-// shouldFlush decides whether to flush now given the pending count and the
-// age of the oldest pending entry.
-func (c *Cadence) shouldFlush(pending int, oldestAge time.Duration) bool {
+// shouldFlush decides whether to flush now given the pending count, the age
+// of the oldest pending entry, and the current time (cron scheduling).
+func (c *Cadence) shouldFlush(pending int, oldestAge time.Duration, now time.Time) bool {
+	if c.Mode == CadenceCron {
+		if c.schedule == nil {
+			return false
+		}
+		if c.nextFire.IsZero() {
+			c.nextFire = c.schedule.Next(now)
+			return false
+		}
+		if now.Before(c.nextFire) {
+			return false
+		}
+		c.nextFire = c.schedule.Next(now)
+		return pending > 0
+	}
 	if pending == 0 {
 		return false
 	}

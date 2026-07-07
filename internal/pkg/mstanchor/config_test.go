@@ -58,6 +58,7 @@ func TestFullConfig(t *testing.T) {
 	v.Set("mst.evm.minBalanceGwei", 500000)
 	v.Set("mst.captureMode", "all")
 	v.Set("mst.includeChaincodes", []string{"assets"})
+	v.Set("mst.sender.batchStrategy", "merkle")
 	v.Set("mst.sender.cadenceMode", "batch")
 	v.Set("mst.sender.cadenceN", 10)
 	v.Set("mst.sender.cadenceMaxWait", "30s")
@@ -80,6 +81,7 @@ func TestFullConfig(t *testing.T) {
 	require.Equal(t, 10, sc.Cadence.N)
 	require.Equal(t, 30*time.Second, sc.Cadence.MaxWait)
 	require.Equal(t, uint64(3), sc.Confirmations)
+	require.Equal(t, sender.BatchStrategy("merkle"), sc.Strategy)
 	require.Equal(t, uint64(500000), cfg.EVM.MinBalanceGwei)
 
 	cc := cfg.CaptureConfig()

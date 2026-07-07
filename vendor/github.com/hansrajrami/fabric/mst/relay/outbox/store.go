@@ -50,6 +50,15 @@ type Store interface {
 	// stream is never wedged and nothing is silently dropped.
 	Quarantine(txID [32]byte, blockNumber uint64, reason string, raw []byte) error
 
+	// PutBatch durably records a Merkle batch's membership (which fabric tx
+	// ids were aggregated under the root) BEFORE the root is submitted, so
+	// inclusion proofs can be produced later. Overwriting the same root is
+	// harmless (membership is a function of the root).
+	PutBatch(root [32]byte, txIDs [][32]byte) error
+
+	// GetBatch returns the batch membership for root, or nil if unknown.
+	GetBatch(root [32]byte) ([][32]byte, error)
+
 	// Stats reports backlog by status, the oldest non-terminal entry's
 	// CreatedAt (0 if none), and the quarantine count.
 	Stats() (Stats, error)
@@ -66,11 +75,11 @@ type Stats struct {
 
 // Sentinel errors.
 var (
-	ErrNotFound          = errors.New("outbox: entry not found")
-	ErrWrongStatus       = errors.New("outbox: entry not in expected status")
-	ErrBadTransition     = errors.New("outbox: transition not allowed")
-	ErrCheckpointGoback  = errors.New("outbox: checkpoint may not move backwards")
-	ErrClosed            = errors.New("outbox: store closed")
+	ErrNotFound         = errors.New("outbox: entry not found")
+	ErrWrongStatus      = errors.New("outbox: entry not in expected status")
+	ErrBadTransition    = errors.New("outbox: transition not allowed")
+	ErrCheckpointGoback = errors.New("outbox: checkpoint may not move backwards")
+	ErrClosed           = errors.New("outbox: store closed")
 )
 
 // Key layout. Fixed single-byte prefixes keep iteration ranges tight.
@@ -84,6 +93,7 @@ const (
 	prefixStatus     = 's'
 	keyCheckpoint    = 'c'
 	prefixQuarantine = 'q'
+	prefixBatch      = 'b'
 )
 
 func entryKey(txID [32]byte) []byte {
@@ -98,6 +108,13 @@ func statusKey(status Status, txID [32]byte) []byte {
 	k[0] = prefixStatus
 	k[1] = byte(status)
 	copy(k[2:], txID[:])
+	return k
+}
+
+func batchKey(root [32]byte) []byte {
+	k := make([]byte, 1+32)
+	k[0] = prefixBatch
+	copy(k[1:], root[:])
 	return k
 }
 
@@ -364,6 +381,30 @@ func (s *LevelDB) Quarantine(txID [32]byte, blockNumber uint64, reason string, r
 		return err
 	}
 	return s.db.Put(quarantineKey(txID), rec, s.wo)
+}
+
+func (s *LevelDB) PutBatch(root [32]byte, txIDs [][32]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosed
+	}
+	raw, err := marshalBatch(txIDs)
+	if err != nil {
+		return err
+	}
+	return s.db.Put(batchKey(root), raw, s.wo)
+}
+
+func (s *LevelDB) GetBatch(root [32]byte) ([][32]byte, error) {
+	raw, err := s.db.Get(batchKey(root), nil)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("outbox: get batch: %w", err)
+	}
+	return unmarshalBatch(raw)
 }
 
 func (s *LevelDB) Stats() (Stats, error) {

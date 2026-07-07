@@ -26,8 +26,10 @@
   },
   "sender": {
     "workers": 4,
+    "batchStrategy": "individual",
     "cadenceMode": "per-tx",
     "cadenceN": 0,
+    "cadenceCron": "",
     "cadenceIntervalSeconds": 0,
     "cadenceMaxWaitSeconds": 0,
     "backoffMinSeconds": 1,

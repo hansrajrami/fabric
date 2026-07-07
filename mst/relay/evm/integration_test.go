@@ -186,6 +186,42 @@ func TestIntegrationClientAndSender(t *testing.T) {
 		t.Fatal("duplicate overwrote the anchor")
 	}
 
+	// Merkle batch root: anchor once, duplicate is a quiet no-op.
+	var root [32]byte
+	copy(root[:], []byte("integration-merkle-root-00000001"))
+	rootRec, err := client.GetRoot(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootRec != nil {
+		t.Fatal("unexpected pre-existing root")
+	}
+	rootHash, err := client.SubmitAnchorRoot(ctx, root, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.WaitConfirmed(ctx, rootHash, 1); err != nil {
+		t.Fatal(err)
+	}
+	rootRec, err = client.GetRoot(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootRec == nil || rootRec.LeafCount != 20 || rootRec.EVMTimestamp == 0 {
+		t.Fatalf("root record: %+v", rootRec)
+	}
+	dupRoot, err := client.SubmitAnchorRoot(ctx, root, 9999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.WaitConfirmed(ctx, dupRoot, 1); err != nil {
+		t.Fatal(err)
+	}
+	rootRec, _ = client.GetRoot(ctx, root)
+	if rootRec.LeafCount != 20 {
+		t.Fatal("duplicate root overwrote the record")
+	}
+
 	// Full sender pipeline against the real chain.
 	store, err := outbox.Open(t.TempDir(), nil)
 	if err != nil {

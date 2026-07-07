@@ -10,14 +10,26 @@ interface IMSTAnchor {
         uint64 evmTimestamp
     );
 
+    event RootAnchored(bytes32 indexed root, uint64 leafCount, uint64 evmTimestamp);
+
     /// @notice Record a commitment for a Fabric tx. Idempotent: a second call for an
     ///         already-anchored fabricTxId is a quiet no-op (no revert, no overwrite).
     function anchor(bytes32 fabricTxId, bytes32 commitment, uint64 blockNumber) external;
+
+    /// @notice Record a Merkle batch root aggregating many commitments (the
+    ///         proof-of-combination). Same idempotency: re-anchoring an
+    ///         existing root is a quiet no-op.
+    function anchorRoot(bytes32 root, uint64 leafCount) external;
 
     function getAnchor(bytes32 fabricTxId)
         external
         view
         returns (bytes32 commitment, uint64 blockNumber, uint64 evmTimestamp, bool exists);
+
+    function getRoot(bytes32 root)
+        external
+        view
+        returns (uint64 leafCount, uint64 evmTimestamp, bool exists);
 }
 
 /// @title  MSTAnchor
@@ -45,10 +57,17 @@ contract MSTAnchor is IMSTAnchor {
     event RelayerSet(address indexed relayer, bool allowed);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
+    struct RootRecord {
+        uint64 leafCount; //  ─┐
+        uint64 evmTimestamp; //├─ packed into one slot
+        bool exists; //        ─┘
+    }
+
     address public owner;
     bool public immutable allowlistEnabled;
     mapping(address => bool) public isRelayer;
     mapping(bytes32 => Anchor) private _anchors;
+    mapping(bytes32 => RootRecord) private _roots;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -98,6 +117,28 @@ contract MSTAnchor is IMSTAnchor {
         a.evmTimestamp = nowTs;
         a.exists = true;
         emit Anchored(fabricTxId, commitment, blockNumber, nowTs);
+    }
+
+    /// @inheritdoc IMSTAnchor
+    function anchorRoot(bytes32 root, uint64 leafCount) external {
+        if (allowlistEnabled && !isRelayer[msg.sender]) revert NotRelayer();
+        RootRecord storage r = _roots[root];
+        if (r.exists) return; // immutable per root: quiet no-op
+        uint64 nowTs = uint64(block.timestamp);
+        r.leafCount = leafCount;
+        r.evmTimestamp = nowTs;
+        r.exists = true;
+        emit RootAnchored(root, leafCount, nowTs);
+    }
+
+    /// @inheritdoc IMSTAnchor
+    function getRoot(bytes32 root)
+        external
+        view
+        returns (uint64 leafCount, uint64 evmTimestamp, bool exists)
+    {
+        RootRecord storage r = _roots[root];
+        return (r.leafCount, r.evmTimestamp, r.exists);
     }
 
     /// @inheritdoc IMSTAnchor

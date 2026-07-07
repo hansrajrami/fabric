@@ -8,6 +8,7 @@ require (
 	github.com/hansrajrami/fabric/mst/fabric-chaincode/proofhelper v0.0.0-00010101000000-000000000000
 	github.com/hyperledger/fabric-gateway v1.11.0
 	github.com/hyperledger/fabric-protos-go-apiv2 v0.3.7
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7
 	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11

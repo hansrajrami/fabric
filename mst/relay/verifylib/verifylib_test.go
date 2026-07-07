@@ -12,10 +12,15 @@ import (
 
 type fakeReader struct {
 	anchors map[[32]byte]*evm.AnchorRecord
+	roots   map[[32]byte]*evm.RootRecord
 }
 
 func (f *fakeReader) GetAnchor(_ context.Context, txID [32]byte) (*evm.AnchorRecord, error) {
 	return f.anchors[txID], nil
+}
+
+func (f *fakeReader) GetRoot(_ context.Context, root [32]byte) (*evm.RootRecord, error) {
+	return f.roots[root], nil
 }
 
 const payloadJSON = `[
@@ -183,5 +188,51 @@ func TestParsePayloadJSONRejectsUnknownTypes(t *testing.T) {
 	}
 	if _, err := ParsePayloadJSON([]byte(`not json`)); err == nil {
 		t.Fatal("garbage must be rejected")
+	}
+}
+
+func TestVerifyInBatch(t *testing.T) {
+	in := input(t)
+	leaf, err := Recompute(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Batch of three: our leaf plus two synthetic siblings.
+	leaves := [][32]byte{leaf, canonical.Keccak256([]byte{1}), canonical.Keccak256([]byte{2})}
+	root, proof, err := DeriveProof(leaves, leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reader := &fakeReader{roots: map[[32]byte]*evm.RootRecord{
+		root: {LeafCount: 3, EVMTimestamp: 1720003333, Exists: true},
+	}}
+
+	res, err := VerifyInBatch(context.Background(), reader, in, root, proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.ProofValid || !res.Match {
+		t.Fatalf("want MATCH: %+v", res)
+	}
+
+	// Tampered data: proof no longer links to the root.
+	tampered := input(t)
+	tampered.BlockNumber++
+	res, err = VerifyInBatch(context.Background(), reader, tampered, root, proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ProofValid || res.Match {
+		t.Fatal("tampered data must fail the inclusion proof")
+	}
+
+	// Root not anchored: proof valid but no MATCH.
+	res, err = VerifyInBatch(context.Background(), &fakeReader{roots: map[[32]byte]*evm.RootRecord{}}, in, root, proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.ProofValid || res.Match || res.OnChain != nil {
+		t.Fatalf("unanchored root must be NO-MATCH with valid proof: %+v", res)
 	}
 }

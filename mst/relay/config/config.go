@@ -77,10 +77,15 @@ type File struct {
 	} `json:"evm"`
 
 	Sender struct {
-		Workers            int    `json:"workers"`
-		CadenceMode        string `json:"cadenceMode"` // per-tx | batch | interval
+		Workers int `json:"workers"`
+		// BatchStrategy: "individual" (default; one on-chain record per tx,
+		// multi-entry flushes share one EVM tx) or "merkle" (one root per
+		// flush; verifiers need inclusion proofs from mst-proof).
+		BatchStrategy      string `json:"batchStrategy"`
+		CadenceMode        string `json:"cadenceMode"` // per-tx | batch | interval | cron
 		CadenceN           int    `json:"cadenceN"`
 		CadenceIntervalSec int    `json:"cadenceIntervalSeconds"`
+		CadenceCron        string `json:"cadenceCron"` // 5-field cron for cadenceMode "cron"
 		CadenceMaxWaitSec  int    `json:"cadenceMaxWaitSeconds"`
 		BackoffMinSec      int    `json:"backoffMinSeconds"`
 		BackoffMaxSec      int    `json:"backoffMaxSeconds"`
@@ -198,11 +203,13 @@ func (f *File) SenderConfig() sender.Config {
 	return sender.Config{
 		Confirmations: f.EVM.Confirmations,
 		Workers:       f.Sender.Workers,
+		Strategy:      sender.BatchStrategy(f.Sender.BatchStrategy),
 		Cadence: sender.Cadence{
 			Mode:     sender.CadenceMode(f.Sender.CadenceMode),
 			N:        f.Sender.CadenceN,
 			Interval: time.Duration(f.Sender.CadenceIntervalSec) * time.Second,
 			MaxWait:  time.Duration(f.Sender.CadenceMaxWaitSec) * time.Second,
+			Cron:     f.Sender.CadenceCron,
 		},
 		Backoff: sender.Backoff{
 			Min: time.Duration(f.Sender.BackoffMinSec) * time.Second,

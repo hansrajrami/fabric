@@ -15,7 +15,9 @@ import (
 var (
 	selAnchor      = selector("anchor(bytes32,bytes32,uint64)")
 	selAnchorBatch = selector("anchorBatch(bytes32[],bytes32[],uint64[])")
+	selAnchorRoot  = selector("anchorRoot(bytes32,uint64)")
 	selGetAnchor   = selector("getAnchor(bytes32)")
+	selGetRoot     = selector("getRoot(bytes32)")
 )
 
 func selector(signature string) [4]byte {
@@ -32,6 +34,23 @@ func packAnchor(fabricTxID, commitment [32]byte, blockNumber uint64) []byte {
 	copy(out[4:36], fabricTxID[:])
 	copy(out[36:68], commitment[:])
 	binary.BigEndian.PutUint64(out[92:100], blockNumber)
+	return out
+}
+
+// packAnchorRoot builds calldata for anchorRoot(root, leafCount).
+func packAnchorRoot(root [32]byte, leafCount uint64) []byte {
+	out := make([]byte, 4+2*32)
+	copy(out[0:4], selAnchorRoot[:])
+	copy(out[4:36], root[:])
+	binary.BigEndian.PutUint64(out[60:68], leafCount)
+	return out
+}
+
+// packGetRoot builds calldata for getRoot(root).
+func packGetRoot(root [32]byte) []byte {
+	out := make([]byte, 4+32)
+	copy(out[0:4], selGetRoot[:])
+	copy(out[4:36], root[:])
 	return out
 }
 
@@ -84,6 +103,25 @@ type AnchorRecord struct {
 	BlockNumber  uint64
 	EVMTimestamp uint64
 	Exists       bool
+}
+
+// RootRecord is the decoded result of getRoot.
+type RootRecord struct {
+	LeafCount    uint64
+	EVMTimestamp uint64
+	Exists       bool
+}
+
+// unpackGetRoot decodes the 3-word return of getRoot.
+func unpackGetRoot(ret []byte) (*RootRecord, error) {
+	if len(ret) != 3*32 {
+		return nil, fmt.Errorf("evm: getRoot returned %d bytes, want %d", len(ret), 3*32)
+	}
+	rec := &RootRecord{}
+	rec.LeafCount = binary.BigEndian.Uint64(ret[24:32])
+	rec.EVMTimestamp = binary.BigEndian.Uint64(ret[32+24 : 64])
+	rec.Exists = ret[95] == 1
+	return rec, nil
 }
 
 // unpackGetAnchor decodes the 4-word return of getAnchor.

@@ -60,6 +60,7 @@ const (
 const (
 	entryIDPrefix      = "e:"
 	quarantineIDPrefix = "q:"
+	batchIDPrefix      = "b:"
 	checkpointDocID    = "c:checkpoint"
 	designDocID        = "_design/mst"
 )
@@ -524,6 +525,75 @@ func (s *CouchDB) Quarantine(txID [32]byte, blockNumber uint64, reason string, r
 		return fmt.Errorf("outbox: write quarantine: HTTP %d: %s", status, body)
 	}
 	return nil
+}
+
+type couchBatchDoc struct {
+	ID   string `json:"_id"`
+	Rev  string `json:"_rev,omitempty"`
+	Kind string `json:"kind"`
+	batchDTO
+}
+
+func (s *CouchDB) PutBatch(root [32]byte, txIDs [][32]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosed
+	}
+	raw, err := marshalBatch(txIDs)
+	if err != nil {
+		return err
+	}
+	var dto batchDTO
+	if err := json.Unmarshal(raw, &dto); err != nil {
+		return err
+	}
+	id := batchIDPrefix + fmt.Sprintf("%x", root)
+	doc := couchBatchDoc{ID: id, Kind: "batch", batchDTO: dto}
+	// Overwrite-safe: fetch the current rev if the record exists.
+	status, body, err := s.do(http.MethodGet, s.path(id), nil)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusOK {
+		var existing struct {
+			Rev string `json:"_rev"`
+		}
+		if err := json.Unmarshal(body, &existing); err == nil {
+			doc.Rev = existing.Rev
+		}
+	}
+	status, body, err = s.do(http.MethodPut, s.path(id), doc)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusCreated {
+		return fmt.Errorf("outbox: write batch record: HTTP %d: %s", status, body)
+	}
+	return nil
+}
+
+func (s *CouchDB) GetBatch(root [32]byte) ([][32]byte, error) {
+	id := batchIDPrefix + fmt.Sprintf("%x", root)
+	status, body, err := s.do(http.MethodGet, s.path(id), nil)
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusNotFound {
+		return nil, nil
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("outbox: get batch: HTTP %d", status)
+	}
+	var doc couchBatchDoc
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, fmt.Errorf("outbox: corrupt batch doc: %w", err)
+	}
+	raw, err := json.Marshal(doc.batchDTO)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalBatch(raw)
 }
 
 func (s *CouchDB) Stats() (Stats, error) {

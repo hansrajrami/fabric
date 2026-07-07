@@ -71,11 +71,15 @@ type Config struct {
 	}
 
 	Sender struct {
-		Workers         int
-		CadenceMode     string
+		Workers int
+		// BatchStrategy: "individual" (default) or "merkle" (one root per
+		// flush; verifiers need inclusion proofs from mst-proof).
+		BatchStrategy   string
+		CadenceMode     string // per-tx | batch | interval | cron
 		CadenceN        int
 		CadenceInterval time.Duration
 		CadenceMaxWait  time.Duration
+		CadenceCron     string
 		BackoffMin      time.Duration
 		BackoffMax      time.Duration
 		ConfirmTimeout  time.Duration
@@ -141,7 +145,9 @@ func FromViper(v *viper.Viper) (*Config, error) {
 	c.EVM.MinBalanceGwei = uint64(v.GetInt64("mst.evm.minBalanceGwei"))
 
 	c.Sender.Workers = v.GetInt("mst.sender.workers")
+	c.Sender.BatchStrategy = v.GetString("mst.sender.batchStrategy")
 	c.Sender.CadenceMode = v.GetString("mst.sender.cadenceMode")
+	c.Sender.CadenceCron = v.GetString("mst.sender.cadenceCron")
 	c.Sender.CadenceN = v.GetInt("mst.sender.cadenceN")
 	c.Sender.CadenceInterval = v.GetDuration("mst.sender.cadenceInterval")
 	c.Sender.CadenceMaxWait = v.GetDuration("mst.sender.cadenceMaxWait")
@@ -245,11 +251,13 @@ func (c *Config) SenderConfig() sender.Config {
 	return sender.Config{
 		Confirmations: c.EVM.Confirmations,
 		Workers:       c.Sender.Workers,
+		Strategy:      sender.BatchStrategy(c.Sender.BatchStrategy),
 		Cadence: sender.Cadence{
 			Mode:     sender.CadenceMode(c.Sender.CadenceMode),
 			N:        c.Sender.CadenceN,
 			Interval: c.Sender.CadenceInterval,
 			MaxWait:  c.Sender.CadenceMaxWait,
+			Cron:     c.Sender.CadenceCron,
 		},
 		Backoff: sender.Backoff{
 			Min: c.Sender.BackoffMin,

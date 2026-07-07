@@ -24,8 +24,39 @@ import (
 type AnchorClient interface {
 	GetAnchor(ctx context.Context, fabricTxID [32]byte) (*evm.AnchorRecord, error)
 	SubmitAnchor(ctx context.Context, fabricTxID, commitment [32]byte, blockNumber uint64) ([32]byte, error)
+	SubmitAnchorBatch(ctx context.Context, ids, commitments [][32]byte, blockNumbers []uint64) ([32]byte, error)
+	SubmitAnchorRoot(ctx context.Context, root [32]byte, leafCount uint64) ([32]byte, error)
+	GetRoot(ctx context.Context, root [32]byte) (*evm.RootRecord, error)
 	TxIncluded(ctx context.Context, txHash [32]byte) (bool, error)
 	WaitConfirmed(ctx context.Context, txHash [32]byte, confirmations uint64) error
+}
+
+// BatchStrategy selects how a flush's entries reach the chain.
+type BatchStrategy string
+
+const (
+	// StrategyIndividual (default): every transaction gets its own on-chain
+	// record. Multi-entry flushes share one EVM transaction via anchorBatch
+	// (~40% gas saving); verification is unchanged (getAnchor per tx).
+	StrategyIndividual BatchStrategy = "individual"
+	// StrategyMerkle: one on-chain record per flush — the Merkle root over
+	// the entries' commitments (~95% gas saving at N=20). Verifying a single
+	// transaction additionally needs its inclusion proof (sibling hashes);
+	// batch membership is persisted in the outbox and exportable with
+	// mst-proof.
+	StrategyMerkle BatchStrategy = "merkle"
+)
+
+// Validate normalizes and checks the strategy.
+func (b *BatchStrategy) Validate() error {
+	switch *b {
+	case "", StrategyIndividual:
+		*b = StrategyIndividual
+	case StrategyMerkle:
+	default:
+		return fmt.Errorf("sender: unknown batch strategy %q (want %q or %q)", *b, StrategyIndividual, StrategyMerkle)
+	}
+	return nil
 }
 
 // Config tunes the sender.
@@ -37,6 +68,8 @@ type Config struct {
 	Workers int
 	// Cadence is the flush policy (default per-tx).
 	Cadence Cadence
+	// Strategy is the batching strategy (default individual).
+	Strategy BatchStrategy
 	// Backoff shapes per-entry retry delays.
 	Backoff Backoff
 	// PollInterval is the outbox re-examination period for per-tx/batch
@@ -60,6 +93,9 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.ConfirmTimeout <= 0 {
 		c.ConfirmTimeout = 2 * time.Minute
+	}
+	if err := c.Strategy.Validate(); err != nil {
+		return err
 	}
 	return c.Cadence.Validate()
 }
@@ -131,8 +167,15 @@ func (s *Sender) FlushOnce(ctx context.Context) error {
 			oldest = age
 		}
 	}
-	if !s.cfg.Cadence.shouldFlush(len(due), oldest) {
+	if !s.cfg.Cadence.shouldFlush(len(due), oldest, s.nowFn()) {
 		return nil
+	}
+
+	if s.cfg.Strategy == StrategyMerkle && len(due) > 1 {
+		return s.processMerkleBatch(ctx, due)
+	}
+	if s.cfg.Strategy == StrategyIndividual && len(due) > 1 {
+		return s.processIndividualBatch(ctx, due)
 	}
 
 	sem := make(chan struct{}, s.cfg.Workers)
@@ -266,13 +309,25 @@ func (s *Sender) RecoverInFlight(ctx context.Context) error {
 		}
 		logger := s.log.With("txID", fmt.Sprintf("%x", e.FabricTxID[:8]))
 
-		rec, err := s.client.GetAnchor(ctx, e.FabricTxID)
+		// Merkle-batched entries are anchored under their batch root, not
+		// under their own tx id: reconcile against getRoot instead.
+		var landed bool
+		var err error
+		if e.BatchRoot != ([32]byte{}) {
+			var root *evm.RootRecord
+			root, err = s.client.GetRoot(ctx, e.BatchRoot)
+			landed = root != nil
+		} else {
+			var rec *evm.AnchorRecord
+			rec, err = s.client.GetAnchor(ctx, e.FabricTxID)
+			landed = rec != nil
+		}
 		if err != nil {
-			logger.Warn("recovery getAnchor failed; leaving SUBMITTED", "err", err)
+			logger.Warn("recovery anchor lookup failed; leaving SUBMITTED", "err", err)
 			continue
 		}
 		switch {
-		case rec != nil:
+		case landed:
 			// Landed. (Commitment mismatch is impossible for our own
 			// submission and fatal-logged on the pending path.)
 			if _, err := s.store.Transition(e.FabricTxID, outbox.StatusSubmitted, outbox.StatusConfirmed, nil); err == nil {
@@ -332,6 +387,7 @@ func (s *Sender) requeueFrom(txID [32]byte, from outbox.Status, attempts uint32,
 		en.Attempts = attempts
 		en.NextRetryAt = s.nowFn().Add(delay).Unix()
 		en.EVMTxHash = [32]byte{}
+		en.BatchRoot = [32]byte{}
 	}); err != nil {
 		logger.Error("requeue transition failed", "err", err)
 		return

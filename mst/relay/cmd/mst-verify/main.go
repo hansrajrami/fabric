@@ -17,14 +17,55 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/hansrajrami/fabric/mst/relay/evm"
 	"github.com/hansrajrami/fabric/mst/relay/verifylib"
 )
+
+// loadBatchProof parses the JSON emitted by mst-proof.
+func loadBatchProof(path string) ([32]byte, [][32]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return [32]byte{}, nil, fmt.Errorf("read batch proof: %w", err)
+	}
+	var file struct {
+		Root  string   `json:"root"`
+		Proof []string `json:"proof"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return [32]byte{}, nil, fmt.Errorf("parse batch proof: %w", err)
+	}
+	root, err := parse32(file.Root)
+	if err != nil {
+		return [32]byte{}, nil, fmt.Errorf("batch proof root: %w", err)
+	}
+	proof := make([][32]byte, len(file.Proof))
+	for i, p := range file.Proof {
+		if proof[i], err = parse32(p); err != nil {
+			return [32]byte{}, nil, fmt.Errorf("batch proof sibling %d: %w", i, err)
+		}
+	}
+	return root, proof, nil
+}
+
+func parse32(s string) ([32]byte, error) {
+	var out [32]byte
+	raw, err := hex.DecodeString(strings.TrimPrefix(s, "0x"))
+	if err != nil {
+		return out, err
+	}
+	if len(raw) != 32 {
+		return out, fmt.Errorf("want 32 bytes, got %d", len(raw))
+	}
+	copy(out[:], raw)
+	return out, nil
+}
 
 func main() {
 	os.Exit(run())
@@ -39,6 +80,7 @@ func run() int {
 		timestamp   = flag.Uint64("timestamp", 0, "tx timestamp (unix seconds, from the tx ChannelHeader)")
 		payloadFile = flag.String("payload", "", "JSON file with the declared payload fields")
 		payloadHex  = flag.String("payload-hex", "", "exact canonical event payload bytes (hex) instead of --payload")
+		batchProof  = flag.String("batch-proof", "", "inclusion-proof JSON from mst-proof: verify against the batch root instead of a per-tx anchor")
 		rpcURL      = flag.String("rpc", "", "MST JSON-RPC endpoint")
 		contract    = flag.String("contract", "", "MSTAnchor contract address")
 		printOnly   = flag.Bool("print-only", false, "only print the recomputed commitment; no chain access")
@@ -105,6 +147,32 @@ func run() int {
 		return fail("%v", err)
 	}
 	defer client.Close()
+
+	if *batchProof != "" {
+		root, proof, err := loadBatchProof(*batchProof)
+		if err != nil {
+			return fail("%v", err)
+		}
+		result, err := verifylib.VerifyInBatch(ctx, client, in, root, proof)
+		if err != nil {
+			return fail("%v", err)
+		}
+		fmt.Printf("recomputed commitment: 0x%s\n", hex.EncodeToString(result.Leaf[:]))
+		fmt.Printf("batch root:            0x%s\n", hex.EncodeToString(root[:]))
+		fmt.Printf("inclusion proof:       %v (%d siblings)\n", result.ProofValid, len(proof))
+		if result.OnChain == nil {
+			fmt.Println("on-chain root:         (none)")
+		} else {
+			fmt.Printf("on-chain root:         anchored, %d leaves, evm timestamp %d\n",
+				result.OnChain.LeafCount, result.OnChain.EVMTimestamp)
+		}
+		if result.Match {
+			fmt.Println("MATCH: the transaction is included in an anchored batch")
+			return 0
+		}
+		fmt.Println("NO-MATCH: inclusion proof invalid or batch root not anchored")
+		return 1
+	}
 
 	result, err := verifylib.Verify(ctx, client, in)
 	if err != nil {

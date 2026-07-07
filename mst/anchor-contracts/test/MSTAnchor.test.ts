@@ -173,6 +173,55 @@ describe("MSTAnchor", () => {
     });
   });
 
+  describe("anchorRoot (Merkle batches)", () => {
+    it("stores the first root and emits RootAnchored", async () => {
+      const { contract } = await loadFixture(deployOpen);
+      const root = id("batch-root-1");
+      const tx = await contract.anchorRoot(root, 20n);
+      const receipt = await tx.wait();
+      const block = await ethers.provider.getBlock(receipt!.blockNumber);
+      await expect(tx)
+        .to.emit(contract, "RootAnchored")
+        .withArgs(root, 20n, BigInt(block!.timestamp));
+
+      const [leafCount, ts, exists] = await contract.getRoot(root);
+      expect(leafCount).to.equal(20n);
+      expect(ts).to.equal(BigInt(block!.timestamp));
+      expect(exists).to.equal(true);
+    });
+
+    it("duplicate root is a quiet no-op: no revert, no overwrite, no event", async () => {
+      const { contract, other } = await loadFixture(deployOpen);
+      const root = id("batch-root-dup");
+      await (await contract.anchorRoot(root, 5n)).wait();
+      const dup = await contract.connect(other).anchorRoot(root, 9999n);
+      const dupReceipt = await dup.wait();
+      expect(dupReceipt!.logs.length).to.equal(0);
+      const [leafCount, , exists] = await contract.getRoot(root);
+      expect(leafCount).to.equal(5n);
+      expect(exists).to.equal(true);
+    });
+
+    it("unknown root reports exists=false", async () => {
+      const { contract } = await loadFixture(deployOpen);
+      const [leafCount, ts, exists] = await contract.getRoot(id("never"));
+      expect(leafCount).to.equal(0n);
+      expect(ts).to.equal(0n);
+      expect(exists).to.equal(false);
+    });
+
+    it("respects the relayer allowlist", async () => {
+      const { contract, relayer, stranger } = await loadFixture(deployAllowlisted);
+      await expect(
+        contract.connect(stranger).anchorRoot(id("r"), 1n)
+      ).to.be.revertedWithCustomError(contract, "NotRelayer");
+      await expect(contract.connect(relayer).anchorRoot(id("r"), 1n)).to.emit(
+        contract,
+        "RootAnchored"
+      );
+    });
+  });
+
   describe("ownership", () => {
     it("transfers ownership and rejects zero address / non-owner", async () => {
       const { contract, deployer, other } = await loadFixture(deployOpen);

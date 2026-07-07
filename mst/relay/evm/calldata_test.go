@@ -16,8 +16,8 @@ import (
 type abiArtifact struct {
 	ContractName string `json:"contractName"`
 	ABI          []struct {
-		Type    string `json:"type"`
-		Name    string `json:"name"`
+		Type    string     `json:"type"`
+		Name    string     `json:"name"`
 		Inputs  []abiParam `json:"inputs"`
 		Outputs []abiParam `json:"outputs"`
 	} `json:"abi"`
@@ -60,7 +60,9 @@ func TestSelectorsMatchCompiledABI(t *testing.T) {
 	for name, want := range map[string][4]byte{
 		"anchor":      selAnchor,
 		"anchorBatch": selAnchorBatch,
+		"anchorRoot":  selAnchorRoot,
 		"getAnchor":   selGetAnchor,
+		"getRoot":     selGetRoot,
 	} {
 		got, ok := abiSelectors[name]
 		if !ok {
@@ -133,6 +135,38 @@ func TestPackAnchorBatchLayout(t *testing.T) {
 
 	if _, err := packAnchorBatch(ids, commitments[:1], blocks); err == nil {
 		t.Fatal("length mismatch must error")
+	}
+}
+
+func TestPackAnchorRootAndUnpackGetRoot(t *testing.T) {
+	var root [32]byte
+	for i := range root {
+		root[i] = byte(0x30 | i&0x0F)
+	}
+	data := packAnchorRoot(root, 20)
+	if len(data) != 4+64 {
+		t.Fatalf("anchorRoot calldata length: %d", len(data))
+	}
+	if [4]byte(data[:4]) != selAnchorRoot || !equal(data[4:36], root[:]) {
+		t.Fatal("anchorRoot calldata wrong")
+	}
+	if binary.BigEndian.Uint64(data[60:68]) != 20 {
+		t.Fatal("leafCount wrong")
+	}
+
+	ret := make([]byte, 96)
+	binary.BigEndian.PutUint64(ret[24:32], 20)      // leafCount
+	binary.BigEndian.PutUint64(ret[56:64], 1720123) // evmTimestamp
+	ret[95] = 1                                     // exists
+	rec, err := unpackGetRoot(ret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.LeafCount != 20 || rec.EVMTimestamp != 1720123 || !rec.Exists {
+		t.Fatalf("root record: %+v", rec)
+	}
+	if _, err := unpackGetRoot(ret[:64]); err == nil {
+		t.Fatal("short getRoot return must error")
 	}
 }
 

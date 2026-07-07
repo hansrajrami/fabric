@@ -79,8 +79,15 @@ type Entry struct {
 	BlockNumber uint64
 	Timestamp   uint64 // Fabric tx ChannelHeader timestamp (unix seconds)
 
-	Status      Status
-	EVMTxHash   [32]byte // zero until submitted
+	Status Status
+	// EVMTxHash is the submission transaction (zero until submitted). For
+	// merkle batches it is the root-anchoring transaction, shared by every
+	// entry of the batch.
+	EVMTxHash [32]byte
+	// BatchRoot is the Merkle batch root this entry was aggregated under
+	// (zero for individually anchored entries). Recovery checks getRoot
+	// instead of getAnchor when set.
+	BatchRoot   [32]byte
 	Attempts    uint32
 	NextRetryAt int64 // unix seconds; 0 = immediately eligible
 	CreatedAt   int64
@@ -100,6 +107,7 @@ type entryDTO struct {
 	Timestamp   uint64 `json:"timestamp"`
 	Status      uint8  `json:"status"`
 	EVMTxHash   string `json:"evm_tx_hash,omitempty"`
+	BatchRoot   string `json:"batch_root,omitempty"`
 	Attempts    uint32 `json:"attempts,omitempty"`
 	NextRetryAt int64  `json:"next_retry_at,omitempty"`
 	CreatedAt   int64  `json:"created_at"`
@@ -125,6 +133,9 @@ func (e *Entry) marshal() ([]byte, error) {
 	}
 	if e.EVMTxHash != zero32 {
 		dto.EVMTxHash = hex.EncodeToString(e.EVMTxHash[:])
+	}
+	if e.BatchRoot != zero32 {
+		dto.BatchRoot = hex.EncodeToString(e.BatchRoot[:])
 	}
 	return json.Marshal(&dto)
 }
@@ -155,6 +166,11 @@ func unmarshalEntry(data []byte) (*Entry, error) {
 	if dto.EVMTxHash != "" {
 		if err := decode32(dto.EVMTxHash, &e.EVMTxHash); err != nil {
 			return nil, fmt.Errorf("outbox: corrupt evm_tx_hash: %w", err)
+		}
+	}
+	if dto.BatchRoot != "" {
+		if err := decode32(dto.BatchRoot, &e.BatchRoot); err != nil {
+			return nil, fmt.Errorf("outbox: corrupt batch_root: %w", err)
 		}
 	}
 	return e, nil

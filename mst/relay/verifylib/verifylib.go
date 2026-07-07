@@ -22,6 +22,12 @@ type AnchorReader interface {
 	GetAnchor(ctx context.Context, fabricTxID [32]byte) (*evm.AnchorRecord, error)
 }
 
+// RootReader is the read-only access batch verification needs; *evm.Client
+// satisfies it.
+type RootReader interface {
+	GetRoot(ctx context.Context, root [32]byte) (*evm.RootRecord, error)
+}
+
 // Input is the original transaction data being verified.
 type Input struct {
 	FabricTxID  string // 64 hex chars
@@ -97,6 +103,55 @@ func Verify(ctx context.Context, reader AnchorReader, in Input) (*Result, error)
 		OnChain:    onChain,
 		Match:      onChain != nil && onChain.Commitment == commitment,
 	}, nil
+}
+
+// BatchResult is the outcome of verifying a transaction inside a Merkle
+// batch (the proof-of-combination path).
+type BatchResult struct {
+	// Leaf is the recomputed per-transaction commitment.
+	Leaf [32]byte
+	// ProofValid reports whether the inclusion proof links Leaf to Root.
+	ProofValid bool
+	// OnChain is the root's record on MST (nil when the root is not anchored).
+	OnChain *evm.RootRecord
+	// Match is the overall verdict: proof valid AND root anchored.
+	Match bool
+}
+
+// VerifyInBatch recomputes the transaction's commitment, checks its Merkle
+// inclusion proof against root, and confirms the root is anchored on MST.
+func VerifyInBatch(ctx context.Context, reader RootReader, in Input, root [32]byte, proof [][32]byte) (*BatchResult, error) {
+	leaf, err := Recompute(in)
+	if err != nil {
+		return nil, err
+	}
+	result := &BatchResult{
+		Leaf:       leaf,
+		ProofValid: canonical.VerifyMerkleProof(root, leaf, proof),
+	}
+	onChain, err := reader.GetRoot(ctx, root)
+	if err != nil {
+		return nil, fmt.Errorf("verify: read root: %w", err)
+	}
+	result.OnChain = onChain
+	result.Match = result.ProofValid && onChain != nil
+	return result, nil
+}
+
+// DeriveProof computes the inclusion proof for a leaf given ALL of the
+// batch's leaf commitments (e.g. published by the relayer's operator or
+// exported with mst-proof). It also returns the recomputed root so callers
+// can cross-check the expected root.
+func DeriveProof(leaves [][32]byte, leaf [32]byte) (root [32]byte, proof [][32]byte, err error) {
+	root, err = canonical.MerkleRoot(leaves)
+	if err != nil {
+		return [32]byte{}, nil, err
+	}
+	proof, err = canonical.MerkleProof(leaves, leaf)
+	if err != nil {
+		return [32]byte{}, nil, err
+	}
+	return root, proof, nil
 }
 
 // fieldSpec is the JSON shape of one declared field — the same shape the

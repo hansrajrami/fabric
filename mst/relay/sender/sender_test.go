@@ -18,7 +18,11 @@ type fakeClient struct {
 	mu sync.Mutex
 
 	anchored map[[32]byte]*evm.AnchorRecord // fabricTxID -> record
+	roots    map[[32]byte]*evm.RootRecord   // merkle root -> record
 	receipts map[[32]byte]bool              // evm tx hash -> included
+
+	batchSubmits int // SubmitAnchorBatch calls
+	rootSubmits  int // SubmitAnchorRoot calls
 
 	submitFailures int  // fail this many submits before succeeding
 	submitBlackout bool // submits succeed but tx never lands (mempool drop)
@@ -32,6 +36,7 @@ type fakeClient struct {
 func newFakeClient() *fakeClient {
 	return &fakeClient{
 		anchored: map[[32]byte]*evm.AnchorRecord{},
+		roots:    map[[32]byte]*evm.RootRecord{},
 		receipts: map[[32]byte]bool{},
 	}
 }
@@ -87,6 +92,59 @@ func (f *fakeClient) WaitConfirmed(ctx context.Context, txHash [32]byte, _ uint6
 		return ctx.Err()
 	}
 	return nil
+}
+
+func (f *fakeClient) SubmitAnchorBatch(_ context.Context, ids, commitments [][32]byte, blockNumbers []uint64) ([32]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.batchSubmits++
+	if f.submitFailures > 0 {
+		f.submitFailures--
+		return [32]byte{}, errors.New("rpc unreachable")
+	}
+	f.nextHash++
+	var hash [32]byte
+	hash[0], hash[1] = 0xE1, f.nextHash
+	if !f.submitBlackout {
+		f.receipts[hash] = true
+		for i, id := range ids {
+			if _, exists := f.anchored[id]; !exists { // contract idempotency
+				f.anchored[id] = &evm.AnchorRecord{
+					Commitment: commitments[i], BlockNumber: blockNumbers[i], EVMTimestamp: 1720001111, Exists: true,
+				}
+			}
+		}
+	}
+	return hash, nil
+}
+
+func (f *fakeClient) SubmitAnchorRoot(_ context.Context, root [32]byte, leafCount uint64) ([32]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rootSubmits++
+	if f.submitFailures > 0 {
+		f.submitFailures--
+		return [32]byte{}, errors.New("rpc unreachable")
+	}
+	f.nextHash++
+	var hash [32]byte
+	hash[0], hash[1] = 0xE2, f.nextHash
+	if !f.submitBlackout {
+		f.receipts[hash] = true
+		if _, exists := f.roots[root]; !exists {
+			f.roots[root] = &evm.RootRecord{LeafCount: leafCount, EVMTimestamp: 1720002222, Exists: true}
+		}
+	}
+	return hash, nil
+}
+
+func (f *fakeClient) GetRoot(_ context.Context, root [32]byte) (*evm.RootRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getAnchorErr != nil {
+		return nil, f.getAnchorErr
+	}
+	return f.roots[root], nil
 }
 
 // recordingWriteBack captures write-back calls; optionally fails first N.
@@ -183,8 +241,10 @@ func TestHappyPathPendingToDone(t *testing.T) {
 	if len(wb.recorded) != 3 {
 		t.Fatalf("write-backs: %d", len(wb.recorded))
 	}
-	if client.submits != 3 {
-		t.Fatalf("submits: %d", client.submits)
+	// Individual strategy with multiple due entries shares ONE EVM
+	// transaction via anchorBatch.
+	if client.batchSubmits != 1 || client.submits != 0 {
+		t.Fatalf("want 1 batch submit, got batch=%d single=%d", client.batchSubmits, client.submits)
 	}
 }
 
@@ -403,8 +463,13 @@ func TestBatchCadenceWaitsForThreshold(t *testing.T) {
 	if err := snd.FlushOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if client.submits != 3 {
-		t.Fatalf("at threshold must flush all; submits=%d", client.submits)
+	if client.batchSubmits != 1 {
+		t.Fatalf("at threshold must flush all in one batch; batchSubmits=%d", client.batchSubmits)
+	}
+	for _, b := range []byte{1, 2, 3} {
+		if got := statusOf(t, store, b); got != outbox.StatusDone {
+			t.Fatalf("entry %d: want DONE, got %s", b, got)
+		}
 	}
 }
 
