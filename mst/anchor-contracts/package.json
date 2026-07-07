@@ -1,0 +1,20 @@
+{
+  "name": "mst-anchor-contracts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MST anchor contract: public, permanent, tamper-evident record of Fabric tx commitments",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "hardhat compile && npm run abi",
+    "abi": "node scripts/export-abi.js",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
+    "deploy:mst": "hardhat run scripts/deploy.ts --network mst"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.28.6",
+    "solc": "^0.8.28"
+  }
+}
