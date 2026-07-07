@@ -63,9 +63,12 @@ func (f *fakeLedger) GetBlocksIterator(startBlock uint64) (commonledger.ResultsI
 
 func TestLedgerSourceFeedsCaptureEndToEnd(t *testing.T) {
 	payload := []byte{0, 0, 0, 0} // canonical empty payload
-	block := buildBlock(t, 0,
-		txSpec{txID: testTxID("a1"), channel: "mychannel", ts: 1720000001, valid: true,
-			chaincode: "mst-example", eventName: "MSTProofRequest", payload: payload},
+	block := buildBlock(
+		t, 0,
+		txSpec{
+			txID: testTxID("a1"), channel: "mychannel", ts: 1720000001, valid: true,
+			chaincode: "mst-example", eventName: "MSTProofRequest", payload: payload,
+		},
 	)
 	iter := &fakeIterator{results: []commonledger.QueryResult{block}, closed: make(chan struct{})}
 	source := newLedgerSource(&fakeLedger{iter: iter}, flogging.MustGetLogger("test"))

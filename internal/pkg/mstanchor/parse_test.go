@@ -104,11 +104,16 @@ func buildBlock(t *testing.T, number uint64, specs ...txSpec) *common.Block {
 }
 
 func TestParseBlockExtractsEndorserTransactions(t *testing.T) {
-	block := buildBlock(t, 7,
-		txSpec{txID: testTxID("a1"), channel: "mychannel", ts: 1720000001, valid: true,
-			chaincode: "mst-example", eventName: "MSTProofRequest", payload: []byte{0, 0, 0, 0}},
-		txSpec{txID: testTxID("a2"), channel: "mychannel", ts: 1720000002, valid: false,
-			chaincode: "mst-example", eventName: "MSTProofRequest", payload: []byte{0, 0, 0, 0}},
+	block := buildBlock(
+		t, 7,
+		txSpec{
+			txID: testTxID("a1"), channel: "mychannel", ts: 1720000001, valid: true,
+			chaincode: "mst-example", eventName: "MSTProofRequest", payload: []byte{0, 0, 0, 0},
+		},
+		txSpec{
+			txID: testTxID("a2"), channel: "mychannel", ts: 1720000002, valid: false,
+			chaincode: "mst-example", eventName: "MSTProofRequest", payload: []byte{0, 0, 0, 0},
+		},
 		txSpec{txID: testTxID("a3"), channel: "mychannel", ts: 1720000003, valid: true},
 	)
 
@@ -132,7 +137,8 @@ func TestParseBlockExtractsEndorserTransactions(t *testing.T) {
 }
 
 func TestParseBlockSurfacesInvokedChaincodeWithoutEvent(t *testing.T) {
-	block := buildBlock(t, 9,
+	block := buildBlock(
+		t, 9,
 		txSpec{txID: testTxID("f1"), channel: "ch", ts: 1, valid: true, chaincode: "assets"},
 	)
 	parsed, err := ParseBlock(block)
@@ -142,7 +148,8 @@ func TestParseBlockSurfacesInvokedChaincodeWithoutEvent(t *testing.T) {
 }
 
 func TestParseBlockSkipsNonEndorserEntries(t *testing.T) {
-	block := buildBlock(t, 1,
+	block := buildBlock(
+		t, 1,
 		txSpec{txID: testTxID("c1"), channel: "ch", ts: 1, valid: true, headerType: common.HeaderType_CONFIG},
 		txSpec{txID: testTxID("c2"), channel: "ch", ts: 1, valid: true},
 	)
@@ -153,7 +160,8 @@ func TestParseBlockSkipsNonEndorserEntries(t *testing.T) {
 }
 
 func TestParseBlockReportsCorruptEnvelopes(t *testing.T) {
-	block := buildBlock(t, 2,
+	block := buildBlock(
+		t, 2,
 		txSpec{corrupt: true},
 		txSpec{txID: testTxID("d1"), channel: "ch", ts: 1, valid: true},
 	)

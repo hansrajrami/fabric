@@ -91,7 +91,8 @@ func (w *LoopbackWriteBack) Record(ctx context.Context, e *outbox.Entry) error {
 		return fmt.Errorf("mstanchor: serialize identity: %w", err)
 	}
 	proposal, txID, err := protoutil.CreateChaincodeProposal(
-		common.HeaderType_ENDORSER_TRANSACTION, e.ChannelID, cis, creator)
+		common.HeaderType_ENDORSER_TRANSACTION, e.ChannelID, cis, creator,
+	)
 	if err != nil {
 		return fmt.Errorf("mstanchor: build proposal: %w", err)
 	}
