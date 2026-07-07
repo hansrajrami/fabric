@@ -1,0 +1,35 @@
+{
+  "_comment": "Example mst-relayd configuration. The relayer's EVM private key is NEVER put in this file - export MST_RELAYER_KEY instead. Pointing at the real MST network is a config-only change (rpcURL/chainID/contractAddress).",
+  "outboxPath": "/var/lib/mst-relay/outbox",
+  "fabric": {
+    "endpoint": "localhost:7051",
+    "tlsCACertPath": "/etc/mst-relay/peer-tls-ca.pem",
+    "serverNameOverride": "",
+    "mspID": "Org1MSP",
+    "certPath": "/etc/mst-relay/relayer-cert.pem",
+    "keyPath": "/etc/mst-relay/relayer-key.pem",
+    "channel": "mychannel",
+    "defaultStartBlock": 0,
+    "excludeChaincodes": [],
+    "anchorStatusChaincode": "mst-anchor-status"
+  },
+  "evm": {
+    "rpcURL": "http://127.0.0.1:8545",
+    "contractAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "chainID": 0,
+    "gasLimit": 0,
+    "tipCapGwei": 0,
+    "confirmations": 1
+  },
+  "sender": {
+    "workers": 4,
+    "cadenceMode": "per-tx",
+    "cadenceN": 0,
+    "cadenceIntervalSeconds": 0,
+    "cadenceMaxWaitSeconds": 0,
+    "backoffMinSeconds": 1,
+    "backoffMaxSeconds": 300,
+    "confirmTimeoutSeconds": 120
+  },
+  "metricsAddr": ":9464"
+}

@@ -18,6 +18,10 @@ const parsed = JSON.parse(fs.readFileSync(artifact, "utf8"));
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(
   path.join(outDir, "MSTAnchor.json"),
-  JSON.stringify({ contractName: parsed.contractName, abi: parsed.abi }, null, 2) + "\n"
+  JSON.stringify(
+    { contractName: parsed.contractName, abi: parsed.abi, bytecode: parsed.bytecode },
+    null,
+    2
+  ) + "\n"
 );
 console.log("ABI exported to abi/MSTAnchor.json");

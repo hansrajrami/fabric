@@ -30,6 +30,11 @@ type Store interface {
 	// part of the state machine.
 	Transition(txID [32]byte, from, to Status, mutate func(*Entry)) (*Entry, error)
 
+	// Update atomically mutates auxiliary fields (attempts, retry time, EVM
+	// tx hash) of an entry that must currently be in status `expect`,
+	// without changing its status.
+	Update(txID [32]byte, expect Status, mutate func(*Entry)) (*Entry, error)
+
 	// ListByStatus returns up to limit entries currently in status (limit<=0
 	// means no limit), ordered by FabricTxID.
 	ListByStatus(status Status, limit int) ([]*Entry, error)
@@ -235,6 +240,39 @@ func (s *LevelDB) Transition(txID [32]byte, from, to Status, mutate func(*Entry)
 	batch.Put(statusKey(to, txID), nil)
 	if err := s.db.Write(batch, s.wo); err != nil {
 		return nil, fmt.Errorf("outbox: write transition: %w", err)
+	}
+	return e.clone(), nil
+}
+
+func (s *LevelDB) Update(txID [32]byte, expect Status, mutate func(*Entry)) (*Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, ErrClosed
+	}
+	e, err := s.Get(txID)
+	if err != nil {
+		return nil, err
+	}
+	if e == nil {
+		return nil, fmt.Errorf("%w: %x", ErrNotFound, txID)
+	}
+	if e.Status != expect {
+		return nil, fmt.Errorf("%w: %x is %s, expected %s", ErrWrongStatus, txID, e.Status, expect)
+	}
+	if mutate != nil {
+		mutate(e)
+		if e.Status != expect {
+			return nil, fmt.Errorf("%w: Update must not change status", ErrBadTransition)
+		}
+	}
+	e.UpdatedAt = nowUnix()
+	raw, err := e.marshal()
+	if err != nil {
+		return nil, fmt.Errorf("outbox: marshal: %w", err)
+	}
+	if err := s.db.Put(entryKey(txID), raw, s.wo); err != nil {
+		return nil, fmt.Errorf("outbox: write update: %w", err)
 	}
 	return e.clone(), nil
 }
