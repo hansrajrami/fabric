@@ -10,6 +10,11 @@ never leaves Fabric — only hashes travel.
 There is **no zero-knowledge component** in Part 1; the pipeline is designed
 so ZK proofs (Part 2) can ride the same outbox/sender/write-back later.
 
+> **New here?** Read [`KNOWLEDGE_TRANSFER.md`](KNOWLEDGE_TRANSFER.md) first — the
+> idea, the reasoning, and a step-by-step build walkthrough of every file. Then
+> [`SETUP.md`](SETUP.md) to deploy/operate and [`UPGRADING.md`](UPGRADING.md) to
+> merge a newer Fabric.
+
 ## Layout
 
 | Directory | Contents |
