@@ -11,6 +11,7 @@ import (
 	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -21,16 +22,22 @@ const (
 	ACLsKey = "ACLs"
 )
 
-// ApplicationProtos is used as the source of the ApplicationConfig
+// ApplicationProtos is used as the source of the ApplicationConfig. The
+// MSTAnchor field carries the channel's MST anchoring configuration as an
+// opaque JSON payload inside a structpb.Value (string kind); the field name
+// doubles as the config value key (see MSTAnchorKey). structpb is used rather
+// than a bespoke fabric-protos message so the fork stays additive.
 type ApplicationProtos struct {
 	ACLs         *pb.ACLs
 	Capabilities *cb.Capabilities
+	MSTAnchor    *structpb.Value
 }
 
 // ApplicationConfig implements the Application interface
 type ApplicationConfig struct {
 	applicationOrgs map[string]ApplicationOrg
 	protos          *ApplicationProtos
+	mstAnchor       *MSTAnchorConfig
 }
 
 // NewApplicationConfig creates config from an Application config group
@@ -50,7 +57,14 @@ func NewApplicationConfig(appGroup *cb.ConfigGroup, mspConfig *MSPConfigHandler)
 		}
 	}
 
-	var err error
+	// MST anchoring config is optional; a nil/absent value simply means the
+	// channel does not anchor to MST.
+	mstAnchor, err := unmarshalMSTAnchorConfig([]byte(ac.protos.MSTAnchor.GetStringValue()))
+	if err != nil {
+		return nil, err
+	}
+	ac.mstAnchor = mstAnchor
+
 	for orgName, orgGroup := range appGroup.Groups {
 		ac.applicationOrgs[orgName], err = NewApplicationOrgConfig(orgName, orgGroup, mspConfig)
 		if err != nil {
@@ -76,4 +90,14 @@ func (ac *ApplicationConfig) APIPolicyMapper() PolicyMapper {
 	pm := newAPIsProvider(ac.protos.ACLs.Acls)
 
 	return pm
+}
+
+// MSTAnchorConfig returns the channel's MST anchoring configuration and
+// whether it is present. It is absent (false) on channels that never set the
+// MSTAnchor config value.
+func (ac *ApplicationConfig) MSTAnchorConfig() (*MSTAnchorConfig, bool) {
+	if ac.mstAnchor == nil {
+		return nil, false
+	}
+	return ac.mstAnchor, true
 }

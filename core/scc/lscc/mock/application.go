@@ -38,6 +38,18 @@ type Application struct {
 	organizationsReturnsOnCall map[int]struct {
 		result1 map[string]channelconfig.ApplicationOrg
 	}
+	MSTAnchorConfigStub        func() (*channelconfig.MSTAnchorConfig, bool)
+	mSTAnchorConfigMutex       sync.RWMutex
+	mSTAnchorConfigArgsForCall []struct {
+	}
+	mSTAnchorConfigReturns struct {
+		result1 *channelconfig.MSTAnchorConfig
+		result2 bool
+	}
+	mSTAnchorConfigReturnsOnCall map[int]struct {
+		result1 *channelconfig.MSTAnchorConfig
+		result2 bool
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -166,6 +178,8 @@ func (fake *Application) Organizations() map[string]channelconfig.ApplicationOrg
 func (fake *Application) OrganizationsCallCount() int {
 	fake.organizationsMutex.RLock()
 	defer fake.organizationsMutex.RUnlock()
+	fake.mSTAnchorConfigMutex.RLock()
+	defer fake.mSTAnchorConfigMutex.RUnlock()
 	return len(fake.organizationsArgsForCall)
 }
 
@@ -196,6 +210,61 @@ func (fake *Application) OrganizationsReturnsOnCall(i int, result1 map[string]ch
 	fake.organizationsReturnsOnCall[i] = struct {
 		result1 map[string]channelconfig.ApplicationOrg
 	}{result1}
+}
+
+func (fake *Application) MSTAnchorConfig() (*channelconfig.MSTAnchorConfig, bool) {
+	fake.mSTAnchorConfigMutex.Lock()
+	ret, specificReturn := fake.mSTAnchorConfigReturnsOnCall[len(fake.mSTAnchorConfigArgsForCall)]
+	fake.mSTAnchorConfigArgsForCall = append(fake.mSTAnchorConfigArgsForCall, struct {
+	}{})
+	fake.recordInvocation("MSTAnchorConfig", []interface{}{})
+	fake.mSTAnchorConfigMutex.Unlock()
+	if fake.MSTAnchorConfigStub != nil {
+		return fake.MSTAnchorConfigStub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	fakeReturns := fake.mSTAnchorConfigReturns
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *Application) MSTAnchorConfigCallCount() int {
+	fake.mSTAnchorConfigMutex.RLock()
+	defer fake.mSTAnchorConfigMutex.RUnlock()
+	return len(fake.mSTAnchorConfigArgsForCall)
+}
+
+func (fake *Application) MSTAnchorConfigCalls(stub func() (*channelconfig.MSTAnchorConfig, bool)) {
+	fake.mSTAnchorConfigMutex.Lock()
+	defer fake.mSTAnchorConfigMutex.Unlock()
+	fake.MSTAnchorConfigStub = stub
+}
+
+func (fake *Application) MSTAnchorConfigReturns(result1 *channelconfig.MSTAnchorConfig, result2 bool) {
+	fake.mSTAnchorConfigMutex.Lock()
+	defer fake.mSTAnchorConfigMutex.Unlock()
+	fake.MSTAnchorConfigStub = nil
+	fake.mSTAnchorConfigReturns = struct {
+		result1 *channelconfig.MSTAnchorConfig
+		result2 bool
+	}{result1, result2}
+}
+
+func (fake *Application) MSTAnchorConfigReturnsOnCall(i int, result1 *channelconfig.MSTAnchorConfig, result2 bool) {
+	fake.mSTAnchorConfigMutex.Lock()
+	defer fake.mSTAnchorConfigMutex.Unlock()
+	fake.MSTAnchorConfigStub = nil
+	if fake.mSTAnchorConfigReturnsOnCall == nil {
+		fake.mSTAnchorConfigReturnsOnCall = make(map[int]struct {
+			result1 *channelconfig.MSTAnchorConfig
+			result2 bool
+		})
+	}
+	fake.mSTAnchorConfigReturnsOnCall[i] = struct {
+		result1 *channelconfig.MSTAnchorConfig
+		result2 bool
+	}{result1, result2}
 }
 
 func (fake *Application) Invocations() map[string][][]interface{} {

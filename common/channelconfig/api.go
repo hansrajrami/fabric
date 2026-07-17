@@ -55,6 +55,10 @@ type Application interface {
 
 	// Capabilities defines the capabilities for the application portion of a channel
 	Capabilities() ApplicationCapabilities
+
+	// MSTAnchorConfig returns the channel's MST anchoring configuration and
+	// whether it is present. Absent on channels that do not anchor to MST.
+	MSTAnchorConfig() (*MSTAnchorConfig, bool)
 }
 
 // Channel gives read only access to the channel configuration

@@ -115,6 +115,18 @@ type Application struct {
 	Capabilities  map[string]bool    `yaml:"Capabilities"`
 	Policies      map[string]*Policy `yaml:"Policies"`
 	ACLs          map[string]string  `yaml:"ACLs"`
+	MSTAnchor     *MSTAnchor         `yaml:"MSTAnchor"`
+}
+
+// MSTAnchor is the channel-level MST anchoring configuration (Phase 1.5). When
+// present and Enabled, the channel anchors its transactions to the dedicated
+// EVM contract at ContractAddress, and the mst system chaincode becomes active
+// on the channel. It is agreed by all orgs through the Application group's
+// modification policy.
+type MSTAnchor struct {
+	Enabled         bool   `yaml:"Enabled"`
+	ContractAddress string `yaml:"ContractAddress"`
+	ChainID         uint64 `yaml:"ChainID"`
 }
 
 // Organization encodes the organization-level configuration needed in

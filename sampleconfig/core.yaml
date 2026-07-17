@@ -643,6 +643,13 @@ chaincode:
         cscc: enable
         lscc: enable
         qscc: enable
+        # mstscc is the MST anchor-status system chaincode (Phase 1.5). It is
+        # the built-in write-back target that records, as a ledger fact, that a
+        # transaction was anchored on the MST chain. Enabling it here is the
+        # peer opting in to participate; it stays inert on any channel whose
+        # configuration has not turned MST anchoring on. Set to "disable" (or
+        # remove) on peers that must never run MST anchoring.
+        mstscc: enable
 
     # Logging section for the chaincode container
     logging:

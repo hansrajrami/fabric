@@ -17,6 +17,26 @@ Everything else is **new, MST-owned territory** upstream will never touch:
 `mst/**`, `internal/pkg/mstanchor/**`, `internal/peer/node/mst.go`,
 `.github/workflows/mst.yml`.
 
+### Phase 1.5 additional coupling (per-channel / channel-config / system chaincode)
+
+Phase 1.5 ([`PHASE-1.5.md`](PHASE-1.5.md)) touches **hot upstream directories**,
+raising merge risk beyond the single-file Phase 1 surface. Each edit is kept as
+thin as possible (a self-contained file plus a few registration lines):
+
+| File | Nature of change | Merge risk |
+|---|---|---|
+| `common/channelconfig/application.go`, `api.go` | one `ApplicationProtos` field (`MSTAnchor *structpb.Value`), one parse line, one accessor added to the `Application` interface | Moderate — re-apply if upstream reworks `ApplicationConfig`. Also requires the 3 `channelconfig.Application` counterfeiter mocks to carry `MSTAnchorConfig` (regenerate with `go generate`, or hand-add) |
+| `common/channelconfig/mstanchor.go` | **new file** (config type + validation + `MSTAnchorValue` helper) | None (additive) |
+| `internal/peer/node/start.go` | `mstscc` added to `builtinSCCs`, constructed next to `qscc`, appended to the deploy loop | Low — 3 small lines near the existing SCC wiring |
+| `core/scc/mstscc/**` | **new package** (the system chaincode) | None (additive) |
+| `internal/configtxgen/genesisconfig/config.go`, `encoder/encoder.go` | one profile struct + one encode block for the MSTAnchor value | Low |
+| `sampleconfig/core.yaml` | `mstscc: enable` under `chaincode.system` | Trivial |
+| `sampleconfig/configtx.yaml` | commented `MSTAnchor` example under `Application` | Trivial |
+
+The encoding choice — JSON inside a `structpb.Value`, not a new `fabric-protos`
+message — is deliberate: it keeps the channelconfig change to a plain field and
+avoids touching the protos module at all.
+
 ## Upstream APIs the embedded mode depends on
 
 All long-stable core surfaces; verify they still exist after a merge (the

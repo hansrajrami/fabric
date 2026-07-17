@@ -6,10 +6,12 @@ SPDX-License-Identifier: Apache-2.0
 package node
 
 import (
+	"fmt"
+
 	"github.com/hyperledger/fabric/core/peer"
+	"github.com/hyperledger/fabric/core/scc/mstscc"
 	"github.com/hyperledger/fabric/internal/pkg/gateway"
 	"github.com/hyperledger/fabric/internal/pkg/mstanchor"
-	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 
 	"github.com/hansrajrami/fabric/mst/relay/sender"
@@ -31,14 +33,19 @@ func startMSTAnchoring(peerInstance *peer.Peer) (*mstanchor.Service, error) {
 		return nil, nil
 	}
 
+	// Phase 1.5 write-back target is the built-in mst system chaincode, not a
+	// deployed user chaincode: anchor status becomes a consensus-backed ledger
+	// fact, active on any channel whose config enables MST anchoring. The
+	// write-back submits RecordAnchor through the peer's embedded gateway,
+	// signed with the relayer's Fabric identity (mst.writeback.*).
 	var writeback sender.WriteBack
-	if cfg.AnchorStatusChaincode != "" {
+	if cfg.WriteBack.MSPID != "" {
 		if mstGatewayServer == nil {
-			return nil, errors.New("mst.anchorStatusChaincode requires the embedded gateway (peer.gateway.enabled) and discovery (peer.discovery.enabled)")
+			return nil, fmt.Errorf("mst write-back requires the embedded gateway (peer.gateway.enabled) and discovery (peer.discovery.enabled)")
 		}
 		writeback, err = mstanchor.NewLoopbackWriteBack(
 			mstGatewayServer,
-			cfg.AnchorStatusChaincode,
+			mstscc.Name,
 			cfg.WriteBack.MSPID,
 			cfg.WriteBack.CertPath,
 			cfg.WriteBack.KeyPath,
@@ -47,7 +54,7 @@ func startMSTAnchoring(peerInstance *peer.Peer) (*mstanchor.Service, error) {
 			return nil, err
 		}
 	} else {
-		logger.Warning("MST anchoring enabled without mst.anchorStatusChaincode: anchors will not be recorded back on Fabric")
+		logger.Warning("MST anchoring enabled without mst.writeback identity: anchors will not be recorded back on Fabric")
 	}
 
 	channels := func() []string {

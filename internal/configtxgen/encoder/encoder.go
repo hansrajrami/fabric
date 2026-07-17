@@ -292,6 +292,18 @@ func NewApplicationGroup(conf *genesisconfig.Application) (*cb.ConfigGroup, erro
 		addValue(applicationGroup, channelconfig.CapabilitiesValue(conf.Capabilities), channelconfig.AdminsPolicyKey)
 	}
 
+	if conf.MSTAnchor != nil {
+		mstValue, err := channelconfig.MSTAnchorValue(&channelconfig.MSTAnchorConfig{
+			Enabled:         conf.MSTAnchor.Enabled,
+			ContractAddress: conf.MSTAnchor.ContractAddress,
+			ChainID:         conf.MSTAnchor.ChainID,
+		})
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid MSTAnchor configuration")
+		}
+		addValue(applicationGroup, mstValue, channelconfig.AdminsPolicyKey)
+	}
+
 	for _, org := range conf.Organizations {
 		var err error
 		applicationGroup.Groups[org.Name], err = NewApplicationOrgGroup(org)

@@ -82,9 +82,17 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		eth.Close()
 		return nil, fmt.Errorf("evm: parse relayer key: %w", err)
 	}
-	if !common.IsHexAddress(cfg.ContractAddress) {
-		eth.Close()
-		return nil, fmt.Errorf("evm: bad contract address %q", cfg.ContractAddress)
+	// ContractAddress is optional: the embedded per-channel path binds a
+	// contract per channel via Bind() and leaves this empty. When set (sidecar
+	// / Phase 1 single-contract path), it is the default contract for the
+	// Client's own Submit/Get methods.
+	var defaultContract common.Address
+	if cfg.ContractAddress != "" {
+		if !common.IsHexAddress(cfg.ContractAddress) {
+			eth.Close()
+			return nil, fmt.Errorf("evm: bad contract address %q", cfg.ContractAddress)
+		}
+		defaultContract = common.HexToAddress(cfg.ContractAddress)
 	}
 
 	chainID := new(big.Int).SetUint64(cfg.ChainID)
@@ -100,11 +108,69 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		eth:      eth,
 		key:      key,
 		sender:   crypto.PubkeyToAddress(key.PublicKey),
-		contract: common.HexToAddress(cfg.ContractAddress),
+		contract: defaultContract,
 		chainID:  chainID,
 		signer:   types.LatestSignerForChainID(chainID),
 		cfg:      cfg,
 	}, nil
+}
+
+// Binding pairs the shared Client (one relayer account, one serialized nonce
+// sequence) with a specific per-channel contract address. It satisfies the
+// sender's AnchorClient interface, so each channel's pipeline submits to its
+// own MSTAnchor contract while every submission still flows through the single
+// Client's nonce lock — avoiding the head-of-line nonce collisions that
+// independent clients on one account would cause.
+type Binding struct {
+	client   *Client
+	contract common.Address
+}
+
+// Bind returns a Binding to the given per-channel contract address. The
+// address must be a 0x-prefixed 20-byte hex string.
+func (c *Client) Bind(address string) (*Binding, error) {
+	if !common.IsHexAddress(address) {
+		return nil, fmt.Errorf("evm: bad contract address %q", address)
+	}
+	return &Binding{client: c, contract: common.HexToAddress(address)}, nil
+}
+
+// Contract returns the bound contract address (0x hex).
+func (b *Binding) Contract() string { return b.contract.Hex() }
+
+func (b *Binding) GetAnchor(ctx context.Context, fabricTxID [32]byte) (*AnchorRecord, error) {
+	return b.client.getAnchorAt(ctx, b.contract, fabricTxID)
+}
+
+func (b *Binding) GetRoot(ctx context.Context, root [32]byte) (*RootRecord, error) {
+	return b.client.getRootAt(ctx, b.contract, root)
+}
+
+func (b *Binding) SubmitAnchor(ctx context.Context, fabricTxID, commitment [32]byte, blockNumber uint64) ([32]byte, error) {
+	return b.client.submit(ctx, b.contract, packAnchor(fabricTxID, commitment, blockNumber), b.client.cfg.GasLimit)
+}
+
+func (b *Binding) SubmitAnchorRoot(ctx context.Context, root [32]byte, leafCount uint64) ([32]byte, error) {
+	return b.client.submit(ctx, b.contract, packAnchorRoot(root, leafCount), b.client.cfg.GasLimit)
+}
+
+func (b *Binding) SubmitAnchorBatch(ctx context.Context, ids, commitments [][32]byte, blockNumbers []uint64) ([32]byte, error) {
+	data, err := packAnchorBatch(ids, commitments, blockNumbers)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	gas := b.client.cfg.GasLimit + perBatchItemGas*uint64(len(ids))
+	return b.client.submit(ctx, b.contract, data, gas)
+}
+
+// TxIncluded and WaitConfirmed operate on transaction hashes, not the
+// contract, so they delegate straight to the shared client.
+func (b *Binding) TxIncluded(ctx context.Context, txHash [32]byte) (bool, error) {
+	return b.client.TxIncluded(ctx, txHash)
+}
+
+func (b *Binding) WaitConfirmed(ctx context.Context, txHash [32]byte, confirmations uint64) error {
+	return b.client.WaitConfirmed(ctx, txHash, confirmations)
 }
 
 // Sender returns the relayer's EVM address.
@@ -125,10 +191,15 @@ func (c *Client) Balance(ctx context.Context) (*big.Int, error) {
 // Close releases the RPC connection.
 func (c *Client) Close() { c.eth.Close() }
 
-// GetAnchor reads the anchor record for fabricTxID; nil when not anchored.
+// GetAnchor reads the anchor record for fabricTxID from the Client's default
+// contract; nil when not anchored.
 func (c *Client) GetAnchor(ctx context.Context, fabricTxID [32]byte) (*AnchorRecord, error) {
+	return c.getAnchorAt(ctx, c.contract, fabricTxID)
+}
+
+func (c *Client) getAnchorAt(ctx context.Context, contract common.Address, fabricTxID [32]byte) (*AnchorRecord, error) {
 	data := packGetAnchor(fabricTxID)
-	ret, err := c.eth.CallContract(ctx, ethereum.CallMsg{To: &c.contract, Data: data}, nil)
+	ret, err := c.eth.CallContract(ctx, ethereum.CallMsg{To: &contract, Data: data}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("evm: getAnchor call: %w", err)
 	}
@@ -142,22 +213,28 @@ func (c *Client) GetAnchor(ctx context.Context, fabricTxID [32]byte) (*AnchorRec
 	return rec, nil
 }
 
-// SubmitAnchor sends anchor(fabricTxID, commitment, blockNumber) and returns
-// the EVM transaction hash without waiting for inclusion.
+// SubmitAnchor sends anchor(fabricTxID, commitment, blockNumber) to the
+// Client's default contract and returns the EVM transaction hash without
+// waiting for inclusion.
 func (c *Client) SubmitAnchor(ctx context.Context, fabricTxID, commitment [32]byte, blockNumber uint64) ([32]byte, error) {
-	return c.submit(ctx, packAnchor(fabricTxID, commitment, blockNumber), c.cfg.GasLimit)
+	return c.submit(ctx, c.contract, packAnchor(fabricTxID, commitment, blockNumber), c.cfg.GasLimit)
 }
 
 // SubmitAnchorRoot sends anchorRoot(root, leafCount) — one transaction
 // anchoring a whole Merkle batch.
 func (c *Client) SubmitAnchorRoot(ctx context.Context, root [32]byte, leafCount uint64) ([32]byte, error) {
-	return c.submit(ctx, packAnchorRoot(root, leafCount), c.cfg.GasLimit)
+	return c.submit(ctx, c.contract, packAnchorRoot(root, leafCount), c.cfg.GasLimit)
 }
 
-// GetRoot reads the batch-root record; nil when the root is not anchored.
+// GetRoot reads the batch-root record from the Client's default contract; nil
+// when the root is not anchored.
 func (c *Client) GetRoot(ctx context.Context, root [32]byte) (*RootRecord, error) {
+	return c.getRootAt(ctx, c.contract, root)
+}
+
+func (c *Client) getRootAt(ctx context.Context, contract common.Address, root [32]byte) (*RootRecord, error) {
 	data := packGetRoot(root)
-	ret, err := c.eth.CallContract(ctx, ethereum.CallMsg{To: &c.contract, Data: data}, nil)
+	ret, err := c.eth.CallContract(ctx, ethereum.CallMsg{To: &contract, Data: data}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("evm: getRoot call: %w", err)
 	}
@@ -171,17 +248,18 @@ func (c *Client) GetRoot(ctx context.Context, root [32]byte) (*RootRecord, error
 	return rec, nil
 }
 
-// SubmitAnchorBatch sends anchorBatch for several entries in one transaction.
+// SubmitAnchorBatch sends anchorBatch for several entries in one transaction
+// to the Client's default contract.
 func (c *Client) SubmitAnchorBatch(ctx context.Context, ids, commitments [][32]byte, blockNumbers []uint64) ([32]byte, error) {
 	data, err := packAnchorBatch(ids, commitments, blockNumbers)
 	if err != nil {
 		return [32]byte{}, err
 	}
 	gas := c.cfg.GasLimit + perBatchItemGas*uint64(len(ids))
-	return c.submit(ctx, data, gas)
+	return c.submit(ctx, c.contract, data, gas)
 }
 
-func (c *Client) submit(ctx context.Context, calldata []byte, gasLimit uint64) ([32]byte, error) {
+func (c *Client) submit(ctx context.Context, contract common.Address, calldata []byte, gasLimit uint64) ([32]byte, error) {
 	c.nonceMu.Lock()
 	defer c.nonceMu.Unlock()
 
@@ -208,7 +286,7 @@ func (c *Client) submit(ctx context.Context, calldata []byte, gasLimit uint64) (
 			GasTipCap: tip,
 			GasFeeCap: feeCap,
 			Gas:       gasLimit,
-			To:        &c.contract,
+			To:        &contract,
 			Data:      calldata,
 		})
 		signed, err := types.SignTx(tx, c.signer, c.key)

@@ -14,6 +14,13 @@ so ZK proofs (Part 2) can ride the same outbox/sender/write-back later.
 > idea, the reasoning, and a step-by-step build walkthrough of every file. Then
 > [`SETUP.md`](SETUP.md) to deploy/operate and [`UPGRADING.md`](UPGRADING.md) to
 > merge a newer Fabric.
+>
+> **Phase 1.5** ([`PHASE-1.5.md`](PHASE-1.5.md)) redesigns the enablement and
+> write-back layers: **per-channel** MST contracts, **channel-config
+> governance** (all orgs agree at channel creation), and a **built-in system
+> chaincode** (`mstscc`) as the write-back target so anchor status is a ledger
+> fact. Phase 1.5 is **embedded-only**; the sidecar below is the Phase 1 legacy
+> mode.
 
 ## Layout
 

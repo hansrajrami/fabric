@@ -504,6 +504,34 @@ var _ = Describe("Encoder", func() {
 			Expect(cg.Values["Capabilities"]).NotTo(BeNil())
 		})
 
+		Context("when MSTAnchor is configured", func() {
+			BeforeEach(func() {
+				conf.MSTAnchor = &genesisconfig.MSTAnchor{
+					Enabled:         true,
+					ContractAddress: "0x1234567890abcdef1234567890abcdef12345678",
+					ChainID:         1337,
+				}
+			})
+
+			It("adds the MSTAnchor value to the application group", func() {
+				cg, err := encoder.NewApplicationGroup(conf)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(cg.Values)).To(Equal(3))
+				Expect(cg.Values["MSTAnchor"]).NotTo(BeNil())
+			})
+
+			Context("and the contract address is invalid", func() {
+				BeforeEach(func() {
+					conf.MSTAnchor.ContractAddress = "0xnothex"
+				})
+
+				It("wraps and returns the error", func() {
+					_, err := encoder.NewApplicationGroup(conf)
+					Expect(err).To(MatchError(ContainSubstring("invalid MSTAnchor configuration")))
+				})
+			})
+		})
+
 		Context("when the policy definition is bad", func() {
 			BeforeEach(func() {
 				conf.Policies["Admins"].Rule = "garbage"

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/ledger"
 
@@ -28,9 +29,11 @@ var logger = flogging.MustGetLogger("mstanchor")
 const channelDiscoveryInterval = 10 * time.Second
 
 // PeerLedgers is the narrow slice of the peer the service needs: which
-// channels exist and their ledgers. *peer.Peer satisfies it.
+// channels exist, their ledgers, and their parsed application config (for the
+// channel-level MST anchoring settings). *peer.Peer satisfies it.
 type PeerLedgers interface {
 	GetLedger(channelID string) ledger.PeerLedger
+	GetApplicationConfig(cid string) (channelconfig.Application, bool)
 }
 
 // ChannelIDLister enumerates the peer's joined channel ids.
@@ -53,6 +56,9 @@ type Service struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	metricsLn *http.Server
+	// warned tracks channels for which a config/allowlist mismatch has already
+	// been logged, so the 10s discovery loop does not spam the log.
+	warned map[string]struct{}
 }
 
 type pipeline struct {
@@ -69,6 +75,7 @@ func New(cfg *Config, peer PeerLedgers, channels ChannelIDLister, writeback send
 		channels:  channels,
 		writeback: writeback,
 		pipelines: map[string]*pipeline{},
+		warned:    map[string]struct{}{},
 	}
 }
 
@@ -90,8 +97,8 @@ func (s *Service) Start() error {
 		return fmt.Errorf("mstanchor: %w", err)
 	}
 	s.client = client
-	logger.Infow("MST anchoring enabled (embedded)", "sender", client.Sender(),
-		"contract", s.cfg.EVM.ContractAddress, "outbox", s.cfg.OutboxPath)
+	logger.Infow("MST anchoring enabled (embedded); contracts are per-channel from channel config",
+		"sender", client.Sender(), "outbox", s.cfg.OutboxPath)
 
 	if s.cfg.MetricsAddr != "" {
 		s.startMetrics()
@@ -156,7 +163,19 @@ func (s *Service) discoverLoop(ctx context.Context) {
 
 func (s *Service) startNewPipelines(ctx context.Context) {
 	for _, channelID := range s.channels() {
+		// Enablement is authoritative from the channel's own configuration
+		// (all orgs agreeing through the Application group's modification
+		// policy), not this peer's core.yaml. A channel that has not turned
+		// MST anchoring on is skipped entirely.
+		mstCfg, ok := s.channelMSTConfig(channelID)
+		if !ok || !mstCfg.Enabled {
+			continue
+		}
+		// The core.yaml mst.channels allowlist is a peer-local secondary
+		// filter only: a peer may decline to anchor a channel even though the
+		// channel enabled it. Surface that mismatch loudly (once).
 		if !s.cfg.channelAllowed(channelID) {
+			s.warnOnce(channelID, "channel enabled MST anchoring in its config but this peer's mst.channels allowlist excludes it; not anchoring")
 			continue
 		}
 		s.mu.Lock()
@@ -165,23 +184,52 @@ func (s *Service) startNewPipelines(ctx context.Context) {
 		if running {
 			continue
 		}
-		if err := s.startPipeline(ctx, channelID); err != nil {
+		if err := s.startPipeline(ctx, channelID, mstCfg); err != nil {
 			logger.Errorw("failed to start anchoring pipeline", "channel", channelID, "err", err)
 		}
 	}
 }
 
-func (s *Service) startPipeline(ctx context.Context, channelID string) error {
+// channelMSTConfig reads the channel's MST anchoring configuration from its
+// parsed application config.
+func (s *Service) channelMSTConfig(channelID string) (*channelconfig.MSTAnchorConfig, bool) {
+	app, ok := s.peer.GetApplicationConfig(channelID)
+	if !ok {
+		return nil, false
+	}
+	return app.MSTAnchorConfig()
+}
+
+// warnOnce logs a per-channel warning at most once for the service's lifetime.
+func (s *Service) warnOnce(channelID, msg string) {
+	s.mu.Lock()
+	_, seen := s.warned[channelID]
+	if !seen {
+		s.warned[channelID] = struct{}{}
+	}
+	s.mu.Unlock()
+	if !seen {
+		logger.Warnw(msg, "channel", channelID)
+	}
+}
+
+func (s *Service) startPipeline(ctx context.Context, channelID string, mstCfg *channelconfig.MSTAnchorConfig) error {
 	l := s.peer.GetLedger(channelID)
 	if l == nil {
 		return fmt.Errorf("no ledger for channel %s", channelID)
+	}
+
+	// Bind this channel's own MST contract onto the shared EVM client (one
+	// relayer account, one serialized nonce sequence across all channels).
+	binding, err := s.client.Bind(mstCfg.ContractAddress)
+	if err != nil {
+		return fmt.Errorf("channel %s: %w", channelID, err)
 	}
 
 	// The outbox backend follows the peer's state database: CouchDB peers
 	// keep the outbox on the same CouchDB server (own databases), LevelDB
 	// peers keep it embedded on local disk.
 	var store outbox.Store
-	var err error
 	if s.cfg.Outbox.Backend == "couchdb" {
 		store, err = outbox.OpenCouchDB(outbox.CouchDBOptions{
 			URL:      s.cfg.Outbox.CouchDB.Address,
@@ -196,12 +244,13 @@ func (s *Service) startPipeline(ctx context.Context, channelID string) error {
 		return err
 	}
 
-	snd, err := sender.New(store, s.client, s.writeback, s.cfg.SenderConfig(), nil)
+	snd, err := sender.New(store, binding, s.writeback, s.cfg.SenderConfig(), nil)
 	if err != nil {
 		store.Close()
 		return err
 	}
 	source := newLedgerSource(l, logger.With("channel", channelID))
+	logger.Infow("binding channel to its MST contract", "channel", channelID, "contract", binding.Contract())
 
 	s.mu.Lock()
 	s.pipelines[channelID] = &pipeline{channelID: channelID, store: store}

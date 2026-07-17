@@ -74,6 +74,7 @@ import (
 	"github.com/hyperledger/fabric/core/scc"
 	"github.com/hyperledger/fabric/core/scc/cscc"
 	"github.com/hyperledger/fabric/core/scc/lscc"
+	"github.com/hyperledger/fabric/core/scc/mstscc"
 	"github.com/hyperledger/fabric/core/scc/qscc"
 	"github.com/hyperledger/fabric/core/transientstore"
 	"github.com/hyperledger/fabric/discovery"
@@ -608,6 +609,7 @@ func serve(args []string) error {
 		"qscc":       {},
 		"cscc":       {},
 		"_lifecycle": {},
+		mstscc.Name:  {},
 	}
 
 	lsccInst := &lscc.SCC{
@@ -715,6 +717,10 @@ func serve(args []string) error {
 		factory.GetDefault(),
 	)
 	qsccInst := scc.SelfDescribingSysCC(qscc.New(aclProvider, peerInstance))
+	// mstscc is the MST anchor-status system chaincode: the write-back target
+	// that records, as a ledger fact, that a transaction was anchored on MST.
+	// It self-gates per channel on the channel's MSTAnchor configuration.
+	mstsccInst := scc.SelfDescribingSysCC(mstscc.New(aclProvider, peerInstance))
 
 	pb.RegisterChaincodeSupportServer(ccSrv.Server(), ccSupSrv)
 
@@ -762,7 +768,7 @@ func serve(args []string) error {
 	}
 
 	// deploy system chaincodes
-	for _, cc := range []scc.SelfDescribingSysCC{lsccInst, csccInst, qsccInst, lifecycleSCC} {
+	for _, cc := range []scc.SelfDescribingSysCC{lsccInst, csccInst, qsccInst, lifecycleSCC, mstsccInst} {
 		if enabled, ok := chaincodeConfig.SCCAllowlist[cc.Name()]; !ok || !enabled {
 			logger.Infof("not deploying chaincode %s as it is not enabled", cc.Name())
 			continue

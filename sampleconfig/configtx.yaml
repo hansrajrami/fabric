@@ -247,6 +247,23 @@ Application: &ApplicationDefaults
     Capabilities:
         <<: *ApplicationCapabilities
 
+    # MSTAnchor (Phase 1.5) turns on MST proof-anchoring for the channel. It is
+    # a channel-level, all-org-agreed setting (governed by the Application
+    # group's modification policy) — not a per-peer core.yaml flag. When
+    # Enabled, the channel anchors its transactions to the dedicated EVM
+    # contract at ContractAddress, and the mst system chaincode becomes the
+    # active write-back target on the channel. The operator deploys one
+    # MSTAnchor contract per channel out of band and records its address here.
+    #
+    # Every endorsing peer on the channel must run an MST-enabled peer binary
+    # (with mstscc in chaincode.system) for anchoring to work. Left unset, the
+    # channel does not anchor to MST and behaves like a normal channel.
+    #
+    # MSTAnchor:
+    #     Enabled: true
+    #     ContractAddress: "0xYourPerChannelMSTAnchorContractAddress0000"
+    #     ChainID: 1337
+
 ################################################################################
 #
 #   ORDERER

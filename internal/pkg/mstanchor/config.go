@@ -23,6 +23,8 @@ import (
 
 	"github.com/spf13/viper"
 
+	"github.com/hyperledger/fabric/core/scc/mstscc"
+
 	"github.com/hansrajrami/fabric/mst/relay/capture"
 	"github.com/hansrajrami/fabric/mst/relay/evm"
 	"github.com/hansrajrami/fabric/mst/relay/sender"
@@ -185,9 +187,18 @@ func FromViper(v *viper.Viper) (*Config, error) {
 	if c.OutboxPath == "" {
 		return nil, fmt.Errorf("mstanchor: mst.outboxPath is required when mst.enabled is true")
 	}
-	if c.EVM.RPCURL == "" || c.EVM.ContractAddress == "" {
-		return nil, fmt.Errorf("mstanchor: mst.evm.rpcURL and mst.evm.contractAddress are required when mst.enabled is true")
+	// In Phase 1.5 the contract address is a per-channel value carried in the
+	// channel configuration, not a single core.yaml value — so only the RPC
+	// endpoint (a peer-local operational setting) is required here. Any
+	// mst.evm.contractAddress that is set is ignored by the embedded
+	// per-channel path.
+	if c.EVM.RPCURL == "" {
+		return nil, fmt.Errorf("mstanchor: mst.evm.rpcURL is required when mst.enabled is true")
 	}
+	// Echo-loop guard: the write-back target (the mst system chaincode) must
+	// never be captured. Its name is always excluded, plus any legacy
+	// user-chaincode write-back target still configured.
+	c.ExcludeChaincodes = appendUnique(c.ExcludeChaincodes, mstscc.Name)
 	if c.AnchorStatusChaincode != "" {
 		c.ExcludeChaincodes = appendUnique(c.ExcludeChaincodes, c.AnchorStatusChaincode)
 	}
