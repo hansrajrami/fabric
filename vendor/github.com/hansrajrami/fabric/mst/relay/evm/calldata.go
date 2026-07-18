@@ -8,6 +8,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/ethereum/go-ethereum/common"
+
 	"github.com/hansrajrami/fabric/mst/canonical"
 )
 
@@ -18,6 +20,7 @@ var (
 	selAnchorRoot  = selector("anchorRoot(bytes32,uint64)")
 	selGetAnchor   = selector("getAnchor(bytes32)")
 	selGetRoot     = selector("getRoot(bytes32)")
+	selSetRelayer  = selector("setRelayer(address,bool)")
 )
 
 func selector(signature string) [4]byte {
@@ -59,6 +62,19 @@ func packGetAnchor(fabricTxID [32]byte) []byte {
 	out := make([]byte, 4+32)
 	copy(out[0:4], selGetAnchor[:])
 	copy(out[4:36], fabricTxID[:])
+	return out
+}
+
+// packSetRelayer builds calldata for setRelayer(address relayer, bool allowed).
+// The address occupies the low 20 bytes of the first ABI word; the bool is the
+// last byte of the second word.
+func packSetRelayer(addr common.Address, allowed bool) []byte {
+	out := make([]byte, 4+2*32)
+	copy(out[0:4], selSetRelayer[:])
+	copy(out[16:36], addr[:]) // 4 + 12 padding .. 4 + 32
+	if allowed {
+		out[67] = 1 // 4 + 32 + 31
+	}
 	return out
 }
 

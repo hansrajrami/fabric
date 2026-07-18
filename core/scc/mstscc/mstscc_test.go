@@ -7,6 +7,7 @@ package mstscc
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/hyperledger/fabric-chaincode-go/shimtest"
@@ -143,4 +144,78 @@ func TestUnknownFunction(t *testing.T) {
 	res := stub.MockInvoke("tx1", [][]byte{[]byte("Nope")})
 	require.Equal(t, int32(500), res.Status)
 	require.Contains(t, res.Message, "unknown function")
+}
+
+// txID builds a distinct valid 64-hex fabric tx id from a single hex digit.
+func txID(d byte) string {
+	return strings.Repeat(string(d), 64)
+}
+
+func recordTx(t *testing.T, stub *shimtest.MockStub, uuid, id string) {
+	t.Helper()
+	res := stub.MockInvoke(uuid, [][]byte{[]byte(RecordAnchor), []byte(id), []byte(anchorRef), []byte(StatusConfirmed)})
+	require.Equal(t, int32(200), res.Status, res.Message)
+}
+
+func TestListAndCountAnchors(t *testing.T) {
+	stub := newTestStub()
+	stub.ChannelID = "enabled"
+	recordTx(t, stub, "t1", txID('1'))
+	recordTx(t, stub, "t2", txID('2'))
+	recordTx(t, stub, "t3", txID('3'))
+
+	// Count.
+	c := stub.MockInvoke("c", [][]byte{[]byte(CountAnchors)})
+	require.Equal(t, int32(200), c.Status, c.Message)
+	require.Equal(t, "3", string(c.Payload))
+
+	// List returns all three records.
+	l := stub.MockInvoke("l", [][]byte{[]byte(ListAnchors)})
+	require.Equal(t, int32(200), l.Status, l.Message)
+	var recs []AnchorStatus
+	require.NoError(t, json.Unmarshal(l.Payload, &recs))
+	require.Len(t, recs, 3)
+	ids := map[string]bool{}
+	for _, r := range recs {
+		ids[r.FabricTxID] = true
+		require.Equal(t, StatusConfirmed, r.Status)
+	}
+	require.True(t, ids[txID('1')] && ids[txID('2')] && ids[txID('3')])
+}
+
+func TestListAnchorsRespectsLimit(t *testing.T) {
+	stub := newTestStub()
+	stub.ChannelID = "enabled"
+	recordTx(t, stub, "t1", txID('1'))
+	recordTx(t, stub, "t2", txID('2'))
+	recordTx(t, stub, "t3", txID('3'))
+
+	l := stub.MockInvoke("l", [][]byte{[]byte(ListAnchors), []byte("2")})
+	require.Equal(t, int32(200), l.Status, l.Message)
+	var recs []AnchorStatus
+	require.NoError(t, json.Unmarshal(l.Payload, &recs))
+	require.Len(t, recs, 2)
+}
+
+func TestListAnchorsEmpty(t *testing.T) {
+	stub := newTestStub()
+	stub.ChannelID = "enabled"
+	l := stub.MockInvoke("l", [][]byte{[]byte(ListAnchors)})
+	require.Equal(t, int32(200), l.Status, l.Message)
+	require.JSONEq(t, "[]", string(l.Payload))
+
+	c := stub.MockInvoke("c", [][]byte{[]byte(CountAnchors)})
+	require.Equal(t, "0", string(c.Payload))
+}
+
+func TestListCountGatedByChannel(t *testing.T) {
+	stub := newTestStub()
+	stub.ChannelID = "disabled"
+	l := stub.MockInvoke("l", [][]byte{[]byte(ListAnchors)})
+	require.Equal(t, int32(500), l.Status)
+	require.Contains(t, l.Message, "not enabled")
+
+	c := stub.MockInvoke("c", [][]byte{[]byte(CountAnchors)})
+	require.Equal(t, int32(500), c.Status)
+	require.Contains(t, c.Message, "not enabled")
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/hyperledger/fabric/internal/peer/channel"
 	"github.com/hyperledger/fabric/internal/peer/common"
 	"github.com/hyperledger/fabric/internal/peer/lifecycle"
+	"github.com/hyperledger/fabric/internal/peer/mst"
 	"github.com/hyperledger/fabric/internal/peer/node"
 	"github.com/hyperledger/fabric/internal/peer/snapshot"
 	"github.com/hyperledger/fabric/internal/peer/version"
@@ -50,6 +51,7 @@ func main() {
 	mainCmd.AddCommand(channel.Cmd(nil))
 	mainCmd.AddCommand(lifecycle.Cmd(cryptoProvider))
 	mainCmd.AddCommand(snapshot.Cmd(cryptoProvider))
+	mainCmd.AddCommand(mst.Cmd(cryptoProvider))
 
 	// On failure Cobra prints the usage message and error string, so we only
 	// need to exit with a non-0 status

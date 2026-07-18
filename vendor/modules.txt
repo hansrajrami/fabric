@@ -281,6 +281,7 @@ github.com/hansrajrami/fabric/mst/relay/evm
 github.com/hansrajrami/fabric/mst/relay/outbox
 github.com/hansrajrami/fabric/mst/relay/sender
 github.com/hansrajrami/fabric/mst/relay/txmodel
+github.com/hansrajrami/fabric/mst/relay/verifylib
 # github.com/hashicorp/go-version v1.4.0
 ## explicit
 github.com/hashicorp/go-version

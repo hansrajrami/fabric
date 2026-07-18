@@ -138,6 +138,25 @@ func (c *Client) Bind(address string) (*Binding, error) {
 // Contract returns the bound contract address (0x hex).
 func (b *Binding) Contract() string { return b.contract.Hex() }
 
+// SetRelayer calls setRelayer(relayer, allowed) on the bound contract to add or
+// remove a wallet from the contract's relayer allowlist. It must be sent from
+// the contract owner's account, so the Client must have been dialed with the
+// owner's key. Returns the EVM transaction hash.
+func (b *Binding) SetRelayer(ctx context.Context, relayer string, allowed bool) ([32]byte, error) {
+	if !common.IsHexAddress(relayer) {
+		return [32]byte{}, fmt.Errorf("evm: bad relayer address %q", relayer)
+	}
+	return b.client.submit(ctx, b.contract, packSetRelayer(common.HexToAddress(relayer), allowed), b.client.cfg.GasLimit)
+}
+
+// SetRelayer calls setRelayer on the Client's default contract (owner-only).
+func (c *Client) SetRelayer(ctx context.Context, relayer string, allowed bool) ([32]byte, error) {
+	if !common.IsHexAddress(relayer) {
+		return [32]byte{}, fmt.Errorf("evm: bad relayer address %q", relayer)
+	}
+	return c.submit(ctx, c.contract, packSetRelayer(common.HexToAddress(relayer), allowed), c.cfg.GasLimit)
+}
+
 func (b *Binding) GetAnchor(ctx context.Context, fabricTxID [32]byte) (*AnchorRecord, error) {
 	return b.client.getAnchorAt(ctx, b.contract, fabricTxID)
 }

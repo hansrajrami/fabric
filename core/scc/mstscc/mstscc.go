@@ -31,6 +31,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/hyperledger/fabric-chaincode-go/shim"
@@ -50,12 +51,22 @@ const (
 	RecordAnchor      = "RecordAnchor"
 	QueryAnchorStatus = "QueryAnchorStatus"
 	IsAnchored        = "IsAnchored"
+	ListAnchors       = "ListAnchors"
+	CountAnchors      = "CountAnchors"
 )
 
 // StatusConfirmed is the only status Phase 1.5 records.
 const StatusConfirmed = "CONFIRMED"
 
-const keyPrefix = "anchor:"
+const (
+	keyPrefix = "anchor:"
+	// keyPrefixEnd is the exclusive upper bound for a range scan over every
+	// "anchor:" key (';' is ':'+1), so GetStateByRange covers exactly the
+	// anchor records.
+	keyPrefixEnd = "anchor;"
+	// defaultListLimit bounds ListAnchors when the caller does not supply one.
+	defaultListLimit = 100
+)
 
 var logger = flogging.MustGetLogger("mstscc")
 
@@ -121,6 +132,10 @@ func (s *MSTAnchorSCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		return s.queryAnchorStatus(stub, args)
 	case IsAnchored:
 		return s.isAnchored(stub, args)
+	case ListAnchors:
+		return s.listAnchors(stub, args)
+	case CountAnchors:
+		return s.countAnchors(stub)
 	default:
 		return shim.Error(fmt.Sprintf("mstscc: unknown function %q", fname))
 	}
@@ -229,6 +244,67 @@ func (s *MSTAnchorSCC) isAnchored(stub shim.ChaincodeStubInterface, args [][]byt
 		return shim.Success([]byte("true"))
 	}
 	return shim.Success([]byte("false"))
+}
+
+// listAnchors returns up to `limit` anchor-status records on the channel as a
+// JSON array, ordered by key. An optional args[1] overrides the limit
+// (defaultListLimit otherwise); 0 or negative means defaultListLimit. Keys are
+// plain (keyPrefix + txID), not composite, so a bounded range scan over the
+// "anchor:" prefix is the correct iteration.
+func (s *MSTAnchorSCC) listAnchors(stub shim.ChaincodeStubInterface, args [][]byte) pb.Response {
+	limit := defaultListLimit
+	if len(args) >= 2 {
+		n, err := strconv.Atoi(string(args[1]))
+		if err != nil {
+			return shim.Error("mstscc: ListAnchors limit must be an integer")
+		}
+		if n > 0 {
+			limit = n
+		}
+	}
+
+	iter, err := stub.GetStateByRange(keyPrefix, keyPrefixEnd)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("mstscc: range query: %s", err))
+	}
+	defer iter.Close()
+
+	records := make([]AnchorStatus, 0, limit)
+	for iter.HasNext() && len(records) < limit {
+		kv, err := iter.Next()
+		if err != nil {
+			return shim.Error(fmt.Sprintf("mstscc: iterate: %s", err))
+		}
+		var rec AnchorStatus
+		if err := json.Unmarshal(kv.GetValue(), &rec); err != nil {
+			return shim.Error(fmt.Sprintf("mstscc: corrupt record for %s: %s", kv.GetKey(), err))
+		}
+		records = append(records, rec)
+	}
+	out, err := json.Marshal(records)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("mstscc: marshal list: %s", err))
+	}
+	return shim.Success(out)
+}
+
+// countAnchors returns the number of anchor-status records on the channel as a
+// decimal string.
+func (s *MSTAnchorSCC) countAnchors(stub shim.ChaincodeStubInterface) pb.Response {
+	iter, err := stub.GetStateByRange(keyPrefix, keyPrefixEnd)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("mstscc: range query: %s", err))
+	}
+	defer iter.Close()
+
+	count := 0
+	for iter.HasNext() {
+		if _, err := iter.Next(); err != nil {
+			return shim.Error(fmt.Sprintf("mstscc: iterate: %s", err))
+		}
+		count++
+	}
+	return shim.Success([]byte(strconv.Itoa(count)))
 }
 
 func validateTxID(txID string) error {

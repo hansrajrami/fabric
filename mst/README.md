@@ -20,7 +20,7 @@ so ZK proofs (Part 2) can ride the same outbox/sender/write-back later.
 > governance** (all orgs agree at channel creation), and a **built-in system
 > chaincode** (`mstscc`) as the write-back target so anchor status is a ledger
 > fact. Phase 1.5 is **embedded-only**; the sidecar below is the Phase 1 legacy
-> mode.
+> mode. Operator commands are in [`CLI.md`](CLI.md) (`peer mst …`).
 
 ## Layout
 

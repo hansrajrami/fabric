@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
+
 	"github.com/hansrajrami/fabric/mst/canonical"
 )
 
@@ -70,6 +72,45 @@ func TestSelectorsMatchCompiledABI(t *testing.T) {
 		}
 		if got != want {
 			t.Fatalf("selector drift for %q: abi %x, packed %x", name, got, want)
+		}
+	}
+}
+
+func TestPackSetRelayerLayout(t *testing.T) {
+	addr := common.HexToAddress("0x1234567890abcdef1234567890abcdef12345678")
+
+	data := packSetRelayer(addr, true)
+	if len(data) != 4+64 {
+		t.Fatalf("length: %d", len(data))
+	}
+	if [4]byte(data[:4]) != selSetRelayer {
+		t.Fatal("selector wrong")
+	}
+	// Address in the low 20 bytes of the first word; first 12 bytes zero.
+	for _, b := range data[4:16] {
+		if b != 0 {
+			t.Fatal("address left padding not zero")
+		}
+	}
+	if !equal(data[16:36], addr[:]) {
+		t.Fatal("address bytes wrong")
+	}
+	// bool true = last byte of the second word, rest zero.
+	for i, b := range data[36:68] {
+		want := byte(0)
+		if i == 31 {
+			want = 1
+		}
+		if b != want {
+			t.Fatalf("bool word byte %d = %d", i, b)
+		}
+	}
+
+	// false => all-zero second word.
+	dataFalse := packSetRelayer(addr, false)
+	for _, b := range dataFalse[36:68] {
+		if b != 0 {
+			t.Fatal("bool false must be all zero")
 		}
 	}
 }
