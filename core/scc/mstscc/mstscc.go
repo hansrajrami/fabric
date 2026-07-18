@@ -57,7 +57,11 @@ const (
 	CountAnchors      = "CountAnchors"
 )
 
-// StatusConfirmed is the only status Phase 1.5 records.
+// StatusConfirmed is the only status Phase 1.5 records. It means the submitting
+// relayer ASSERTS the transaction was anchored on MST — it is an attestation by
+// a peer-role identity, NOT an on-ledger verification against MST state (an SCC
+// cannot read EVM state). Independent proof is established off-ledger with
+// `peer mst verify`, which reads the real MST chain. See AnchorStatus.
 const StatusConfirmed = "CONFIRMED"
 
 const (
@@ -83,6 +87,13 @@ type ChannelConfigGetter interface {
 // AnchorStatus is the thin pointer stored per anchored transaction. It records
 // only where the proof lives publicly; it never re-stores the commitment or
 // any business data, and can never touch business state.
+//
+// Trust model: this is an ATTESTATION plus a public POINTER (AnchorRef), signed
+// by a peer-role identity — not a proof. It says "a peer node asserts this tx is
+// anchored at this MST tx hash"; it does not prove the MST chain actually
+// contains a matching commitment. Consumers who need certainty resolve the
+// pointer against the real chain with `peer mst verify`; they must not treat the
+// stored Status as chain-verified truth.
 type AnchorStatus struct {
 	FabricTxID string `json:"fabric_tx_id"`
 	AnchorRef  string `json:"anchor_ref"` // MST tx hash (0x + 64 hex)

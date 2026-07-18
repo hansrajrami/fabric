@@ -123,14 +123,36 @@ using the channel MSP (`defaultRequirePeer`), so it honors the network's NodeOUs
 configuration and fails closed if NodeOUs are not enabled. In embedded mode the
 relayer therefore signs the write-back with the peer's own node identity
 (`mst.writeback.*` must be the peer signcert). Reads (`QueryAnchorStatus`,
-`IsAnchored`, `ListAnchors`, `CountAnchors`) are not identity-gated. The
-`aclProvider` field and the injectable `requirePeer` seam allow tightening this
-further (e.g. a named-relayer allowlist or M-of-N committee) without reshaping
-the chaincode.
+`IsAnchored`, `ListAnchors`, `CountAnchors`) are not identity-gated.
 
 > **Precondition:** the channel's MSPs must have **NodeOUs enabled** so peer vs
 > client identities can be distinguished; otherwise the peer-role check fails
 > closed and no write-back is accepted.
+
+**Trust model — attestation + pointer, verified off-ledger.** The stored record
+is an **attestation** by a peer-role identity plus a public **pointer**
+(`anchor_ref` = the MST tx hash); it is deliberately **not** a proof. A Fabric
+SCC cannot read EVM state, so the SCC never confirms the MST chain actually holds
+a matching commitment — `status: CONFIRMED` means "a peer node asserts this,"
+not "verified on-chain." Independent truth is established off-ledger by
+[`peer mst verify`](CLI.md), which resolves the pointer against the real MST
+chain and re-derives the commitment. This is a sufficient and intentional design
+for the consortium model, for two reasons:
+
+- The peer-role gate + Fabric's signed transaction creator make every write
+  **attributable to a known member org** — a false record is a named org caught
+  lying on a shared ledger, not anonymous forgery.
+- `peer mst verify` already performs the *real* verification against MST state,
+  so any consumer who needs certainty has a first-class, trustless-of-the-record
+  path to it. An on-ledger oracle or light client would only re-implement that
+  same check at far higher cost and chain-specific complexity.
+
+A **named-relayer allowlist** (fewer writers) or an **EVM light-client oracle**
+(on-ledger verification) would only be warranted if an **automated, on-ledger
+consumer** were to act on a record *without* running `peer mst verify` first — a
+case Phase 1.5 does not include. The `aclProvider` field and the injectable
+`requirePeer` seam are retained so that allowlist / M-of-N policy can be added
+later without reshaping the chaincode, should such a consumer appear.
 
 **Echo-loop safe:** `mstscc` never calls `SetEvent`, and its name is always
 added to the capture service's excluded-chaincodes set, so a write-back can
@@ -155,14 +177,6 @@ operational knobs (RPC URL/credentials, workers, cadence, outbox path, and the
   is not per-channel deployed. Every endorsing peer on an enabled channel must
   run the MST-enabled binary, or the write-back cannot be endorsed. This is a
   hard deployment prerequisite.
-- **Anchor status is a claim, not a proof.** The SCC records that a submitter
-  asserted a tx was anchored; it does not verify against the MST chain (a Fabric
-  SCC cannot read EVM state without an oracle), so truth is still established
-  off-ledger with `mst-verify` / `peer mst verify`. The peer-role gate narrows
-  who can write to peer *nodes* (removing the "any channel member forges/squats"
-  case), but a rogue member org's peer could still write a false record — a
-  fully trustless design would need a named-relayer allowlist, multi-party
-  attestation, or an EVM light-client oracle.
 - **Config-update validation is minimal.** The value's address format is checked;
   nothing verifies the contract is deployed or that all peers are patched.
 - **Phase 1 coexistence / migration is out of scope.** New channels use Phase
