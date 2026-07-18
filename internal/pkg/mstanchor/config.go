@@ -86,8 +86,9 @@ type Config struct {
 	}
 
 	// WriteBack is the relayer's Fabric identity used to submit RecordAnchor
-	// through the peer's embedded gateway (any valid MSP identity on the
-	// channel is accepted by the mst system chaincode).
+	// through the peer's embedded gateway. The mst system chaincode requires a
+	// PEER-role identity (NodeOUs), so this must be the peer's own node
+	// signing identity, not a client cert.
 	WriteBack struct {
 		MSPID    string
 		CertPath string

@@ -40,7 +40,7 @@ supported for the legacy shared-contract, user-chaincode flow.
         │  Anchored
         ▼
  LoopbackWriteBack ─► [Fabric] mstscc.RecordAnchor  (system chaincode)
-   • idempotent per fabric_tx_id     • any valid MSP identity may submit
+   • idempotent per fabric_tx_id     • only a PEER-role identity may submit
    • never emits events (echo-safe)  • rejected unless the channel enabled MST
 ```
 
@@ -116,10 +116,21 @@ compiled into the peer and gated two ways:
   is active only when the channel enables MST anchoring" means for a built-in
   SCC.
 
-**Authorization** is any valid MSP identity on the channel (a write only reaches
-the SCC after the peer has authenticated the proposer as a channel member). The
-`aclProvider` field is the single hook for tightening this to a designated
-relayer or an M-of-N committee later, without reshaping the chaincode.
+**Authorization** requires a **peer-role identity** (NodeOUs): only a peer
+*node's* signing identity may submit `RecordAnchor`, not a client/user identity.
+The SCC evaluates the transaction creator against an `MSPRole{PEER}` principal
+using the channel MSP (`defaultRequirePeer`), so it honors the network's NodeOUs
+configuration and fails closed if NodeOUs are not enabled. In embedded mode the
+relayer therefore signs the write-back with the peer's own node identity
+(`mst.writeback.*` must be the peer signcert). Reads (`QueryAnchorStatus`,
+`IsAnchored`, `ListAnchors`, `CountAnchors`) are not identity-gated. The
+`aclProvider` field and the injectable `requirePeer` seam allow tightening this
+further (e.g. a named-relayer allowlist or M-of-N committee) without reshaping
+the chaincode.
+
+> **Precondition:** the channel's MSPs must have **NodeOUs enabled** so peer vs
+> client identities can be distinguished; otherwise the peer-role check fails
+> closed and no write-back is accepted.
 
 **Echo-loop safe:** `mstscc` never calls `SetEvent`, and its name is always
 added to the capture service's excluded-chaincodes set, so a write-back can
@@ -144,12 +155,14 @@ operational knobs (RPC URL/credentials, workers, cadence, outbox path, and the
   is not per-channel deployed. Every endorsing peer on an enabled channel must
   run the MST-enabled binary, or the write-back cannot be endorsed. This is a
   hard deployment prerequisite.
-- **Anchor status is a claim, not a proof.** With "any valid MSP identity", the
-  SCC records that *someone* asserted a tx was anchored; it does not verify
-  against the MST chain (a Fabric SCC cannot read EVM state without an oracle).
-  Truth is still established off-ledger with `mst-verify`. Idempotency prevents
-  overwriting a genuine record, but a false claim can land first for a tx that
-  was never anchored.
+- **Anchor status is a claim, not a proof.** The SCC records that a submitter
+  asserted a tx was anchored; it does not verify against the MST chain (a Fabric
+  SCC cannot read EVM state without an oracle), so truth is still established
+  off-ledger with `mst-verify` / `peer mst verify`. The peer-role gate narrows
+  who can write to peer *nodes* (removing the "any channel member forges/squats"
+  case), but a rogue member org's peer could still write a false record — a
+  fully trustless design would need a named-relayer allowlist, multi-party
+  attestation, or an EVM light-client oracle.
 - **Config-update validation is minimal.** The value's address format is checked;
   nothing verifies the contract is deployed or that all peers are patched.
 - **Phase 1 coexistence / migration is out of scope.** New channels use Phase

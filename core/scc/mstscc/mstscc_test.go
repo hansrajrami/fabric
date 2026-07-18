@@ -7,9 +7,11 @@ package mstscc
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/hyperledger/fabric-chaincode-go/shim"
 	"github.com/hyperledger/fabric-chaincode-go/shimtest"
 	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/channelconfig"
@@ -46,14 +48,32 @@ func (g fakeGetter) GetApplicationConfig(cid string) (channelconfig.Application,
 	return a, ok
 }
 
-func newTestStub() *shimtest.MockStub {
-	getter := fakeGetter{apps: map[string]channelconfig.Application{
+// GetChannelConfig is unused by these unit tests: the peer-role authorizer is
+// injected directly (allowPeer / denyPeer), so the real MSP path is never hit.
+func (g fakeGetter) GetChannelConfig(string) channelconfig.Resources { return nil }
+
+// allowPeer / denyPeer are injectable requirePeer authorizers for tests.
+func allowPeer(shim.ChaincodeStubInterface, string) error { return nil }
+
+func denyPeer(shim.ChaincodeStubInterface, string) error {
+	return fmt.Errorf("submitter is not a peer identity")
+}
+
+// newTestSCC builds the SCC with a permissive peer authorizer (the default
+// MSP-based check needs a real channel MSP, exercised in integration).
+func newTestSCC() *MSTAnchorSCC {
+	scc := New(nil, fakeGetter{apps: map[string]channelconfig.Application{
 		"enabled":  fakeApp{cfg: &channelconfig.MSTAnchorConfig{Enabled: true, ContractAddress: "0x1234567890abcdef1234567890abcdef12345678"}},
 		"disabled": fakeApp{cfg: &channelconfig.MSTAnchorConfig{Enabled: false}},
 		// "unconfigured" is present with no MSTAnchorConfig value.
 		"unconfigured": fakeApp{cfg: nil},
-	}}
-	return shimtest.NewMockStub("mstscc", New(nil, getter))
+	}})
+	scc.requirePeer = allowPeer
+	return scc
+}
+
+func newTestStub() *shimtest.MockStub {
+	return shimtest.NewMockStub("mstscc", newTestSCC())
 }
 
 func record(stub *shimtest.MockStub, uuid string) pb.Response {
@@ -206,6 +226,33 @@ func TestListAnchorsEmpty(t *testing.T) {
 
 	c := stub.MockInvoke("c", [][]byte{[]byte(CountAnchors)})
 	require.Equal(t, "0", string(c.Payload))
+}
+
+func TestRecordRequiresPeerIdentity(t *testing.T) {
+	scc := newTestSCC()
+	scc.requirePeer = denyPeer // simulate a non-peer (client) submitter
+	stub := shimtest.NewMockStub("mstscc", scc)
+	stub.ChannelID = "enabled"
+
+	res := record(stub, "tx1")
+	require.Equal(t, int32(500), res.Status)
+	require.Contains(t, res.Message, "peer identity")
+
+	// Reads are NOT peer-gated: a non-peer can still query.
+	i := stub.MockInvoke("tx2", [][]byte{[]byte(IsAnchored), []byte(txIDA)})
+	require.Equal(t, int32(200), i.Status)
+	require.Equal(t, "false", string(i.Payload))
+
+	l := stub.MockInvoke("tx3", [][]byte{[]byte(CountAnchors)})
+	require.Equal(t, int32(200), l.Status)
+	require.Equal(t, "0", string(l.Payload))
+}
+
+func TestRecordAllowedForPeerIdentity(t *testing.T) {
+	// The default permissive authorizer (a peer) records successfully.
+	stub := newTestStub()
+	stub.ChannelID = "enabled"
+	require.Equal(t, int32(200), record(stub, "tx1").Status)
 }
 
 func TestListCountGatedByChannel(t *testing.T) {

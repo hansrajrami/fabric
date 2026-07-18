@@ -35,10 +35,12 @@ import (
 	"strings"
 
 	"github.com/hyperledger/fabric-chaincode-go/shim"
+	mspprotos "github.com/hyperledger/fabric-protos-go/msp"
 	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/aclmgmt"
+	"github.com/hyperledger/fabric/protoutil"
 )
 
 // Name is the built-in chaincode name. It must be listed in the peer's
@@ -70,11 +72,12 @@ const (
 
 var logger = flogging.MustGetLogger("mstscc")
 
-// ChannelConfigGetter yields a channel's parsed application config so the SCC
-// can read the channel-level MST anchoring configuration. *peer.Peer
-// satisfies it (GetApplicationConfig).
+// ChannelConfigGetter yields a channel's parsed application config (for the
+// MST anchoring settings) and its full config resources (for the channel MSP,
+// used to check the write-back submitter's role). *peer.Peer satisfies it.
 type ChannelConfigGetter interface {
 	GetApplicationConfig(cid string) (channelconfig.Application, bool)
+	GetChannelConfig(cid string) channelconfig.Resources
 }
 
 // AnchorStatus is the thin pointer stored per anchored transaction. It records
@@ -89,19 +92,35 @@ type AnchorStatus struct {
 
 // MSTAnchorSCC is the system-chaincode implementation.
 type MSTAnchorSCC struct {
-	// aclProvider is retained as the single hook for tightening who may submit
-	// anchor-status writes. Phase 1.5 authorizes any valid MSP identity on the
-	// channel (a write only reaches Invoke after the peer has authenticated the
-	// proposer as a channel member), so no additional ACL check is performed;
-	// a designated-relayer or M-of-N committee policy plugs in here later
-	// without reshaping the chaincode.
+	// aclProvider is retained as a hook for further tightening who may submit
+	// anchor-status writes (e.g. a named-relayer allowlist or M-of-N committee).
 	aclProvider  aclmgmt.ACLProvider
 	configGetter ChannelConfigGetter
+	// requirePeer authorizes the RecordAnchor submitter. The default requires a
+	// peer-role identity (NodeOUs) — only peer nodes, not client/user
+	// identities, may write anchor status. It is a field so tests can inject a
+	// fake without a full MSP.
+	requirePeer func(stub shim.ChaincodeStubInterface, channelID string) error
+}
+
+// Option configures an MSTAnchorSCC.
+type Option func(*MSTAnchorSCC)
+
+// WithPeerAuthorizer overrides the RecordAnchor authorizer. The default requires
+// a peer-role identity; this seam lets callers swap in an alternative policy
+// (e.g. a named-relayer allowlist) or a fake in tests.
+func WithPeerAuthorizer(fn func(stub shim.ChaincodeStubInterface, channelID string) error) Option {
+	return func(s *MSTAnchorSCC) { s.requirePeer = fn }
 }
 
 // New returns an MST anchor-status SCC. Typically called once per peer.
-func New(aclProvider aclmgmt.ACLProvider, configGetter ChannelConfigGetter) *MSTAnchorSCC {
-	return &MSTAnchorSCC{aclProvider: aclProvider, configGetter: configGetter}
+func New(aclProvider aclmgmt.ACLProvider, configGetter ChannelConfigGetter, opts ...Option) *MSTAnchorSCC {
+	s := &MSTAnchorSCC{aclProvider: aclProvider, configGetter: configGetter}
+	s.requirePeer = s.defaultRequirePeer
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 func (s *MSTAnchorSCC) Name() string              { return Name }
@@ -157,10 +176,46 @@ func (s *MSTAnchorSCC) requireEnabled(channelID string) error {
 	return nil
 }
 
+// defaultRequirePeer authorizes the RecordAnchor submitter by requiring the
+// transaction creator to be a peer-role identity on the channel — i.e. a peer
+// node, not a client/user. It evaluates the creator against an MSPRole{PEER}
+// principal using the channel MSP, which honors the network's NodeOUs
+// configuration (and fails closed if NodeOUs are not enabled, since peer
+// classification is then undefined).
+func (s *MSTAnchorSCC) defaultRequirePeer(stub shim.ChaincodeStubInterface, channelID string) error {
+	res := s.configGetter.GetChannelConfig(channelID)
+	if res == nil {
+		return fmt.Errorf("no channel config for %s", channelID)
+	}
+	creator, err := stub.GetCreator()
+	if err != nil {
+		return fmt.Errorf("read creator: %w", err)
+	}
+	id, err := res.MSPManager().DeserializeIdentity(creator)
+	if err != nil {
+		return fmt.Errorf("deserialize creator: %w", err)
+	}
+	principal := &mspprotos.MSPPrincipal{
+		PrincipalClassification: mspprotos.MSPPrincipal_ROLE,
+		Principal: protoutil.MarshalOrPanic(&mspprotos.MSPRole{
+			MspIdentifier: id.GetMSPIdentifier(),
+			Role:          mspprotos.MSPRole_PEER,
+		}),
+	}
+	if err := id.SatisfiesPrincipal(principal); err != nil {
+		return fmt.Errorf("submitter is not a peer identity: %w", err)
+	}
+	return nil
+}
+
 // recordAnchor records that fabricTxID was anchored on MST. Idempotent by
 // fabricTxID: re-recording an existing id is a quiet success that changes
-// nothing, so relayer retries can never duplicate or overwrite.
+// nothing, so relayer retries can never duplicate or overwrite. Only a
+// peer-role identity may submit it (see defaultRequirePeer).
 func (s *MSTAnchorSCC) recordAnchor(stub shim.ChaincodeStubInterface, args [][]byte) pb.Response {
+	if err := s.requirePeer(stub, stub.GetChannelID()); err != nil {
+		return shim.Error("mstscc: RecordAnchor rejected: " + err.Error())
+	}
 	if len(args) != 4 {
 		return shim.Error("mstscc: RecordAnchor(fabricTxID, anchorRef, status) requires 3 arguments")
 	}

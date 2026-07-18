@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric-chaincode-go/shim"
 	"github.com/hyperledger/fabric-chaincode-go/shimtest"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/flogging"
@@ -211,6 +212,17 @@ func (g staticGetter) GetApplicationConfig(cid string) (channelconfig.Applicatio
 	return a, ok
 }
 
+// GetChannelConfig is unused here: the SCC is constructed with a permissive
+// peer authorizer (WithPeerAuthorizer), so the MSP-based check never runs.
+func (g staticGetter) GetChannelConfig(string) channelconfig.Resources { return nil }
+
+// permitPeerWriteback is a WithPeerAuthorizer option that treats the write-back
+// submitter as a peer identity (the real MSP-based check is exercised in
+// integration, not in this in-memory e2e).
+func permitPeerWriteback() mstscc.Option {
+	return mstscc.WithPeerAuthorizer(func(shim.ChaincodeStubInterface, string) error { return nil })
+}
+
 // captureBlock runs the real capture service over a single block via the fake
 // ledger, returning the single PENDING outbox entry it produced.
 func captureBlock(t *testing.T, store outbox.Store, block *commonledger.QueryResult) *outbox.Entry {
@@ -282,7 +294,7 @@ func TestE2EHappyPath(t *testing.T) {
 	require.Equal(t, channel, entry.ChannelID)
 
 	chain := newSimMSTChain()
-	scc := shimtest.NewMockStub("mstscc", mstscc.New(nil, enabledGetter(map[string]string{channel: contract})))
+	scc := shimtest.NewMockStub("mstscc", mstscc.New(nil, enabledGetter(map[string]string{channel: contract}), permitPeerWriteback()))
 	wb := &sccWriteBack{stub: scc, channelID: channel}
 
 	perTxFlush(t, store, &boundSimClient{chain: chain, contract: contract}, wb)
@@ -323,7 +335,7 @@ func TestE2EPerChannelIsolation(t *testing.T) {
 
 	chain := newSimMSTChain()
 	getter := enabledGetter(map[string]string{chanA: contractA, chanB: contractB})
-	scc := shimtest.NewMockStub("mstscc", mstscc.New(nil, getter))
+	scc := shimtest.NewMockStub("mstscc", mstscc.New(nil, getter, permitPeerWriteback()))
 
 	// Channel A.
 	storeA, err := outbox.Open(t.TempDir(), &outbox.Options{NoSync: true})
@@ -366,7 +378,7 @@ func TestE2EChannelConfigGate(t *testing.T) {
 	getter := staticGetter{apps: map[string]channelconfig.Application{
 		channel: mstApp{cfg: &channelconfig.MSTAnchorConfig{Enabled: false}},
 	}}
-	scc := shimtest.NewMockStub("mstscc", mstscc.New(nil, getter))
+	scc := shimtest.NewMockStub("mstscc", mstscc.New(nil, getter, permitPeerWriteback()))
 	wb := &sccWriteBack{stub: scc, channelID: channel}
 
 	perTxFlush(t, store, &boundSimClient{chain: chain, contract: contract}, wb)
@@ -448,7 +460,7 @@ func TestE2EEchoLoopGuard(t *testing.T) {
 	entry := captureBlock(t, store, newProofBlock(t, 0, "e1", channel))
 
 	chain := newSimMSTChain()
-	scc := shimtest.NewMockStub("mstscc", mstscc.New(nil, enabledGetter(map[string]string{channel: contract})))
+	scc := shimtest.NewMockStub("mstscc", mstscc.New(nil, enabledGetter(map[string]string{channel: contract}), permitPeerWriteback()))
 	wb := &sccWriteBack{stub: scc, channelID: channel}
 	perTxFlush(t, store, &boundSimClient{chain: chain, contract: contract}, wb)
 	require.Equal(t, outbox.StatusDone, statusOf(t, store, entry.FabricTxID))
