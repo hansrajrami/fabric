@@ -513,6 +513,9 @@ var _ = Describe("Encoder", func() {
 					CaptureMode:     "all",
 					BatchStrategy:   "merkle",
 					Confirmations:   6,
+					CadenceMode:     "batch",
+					CadenceN:        20,
+					CadenceMaxWait:  "2m",
 				}
 			})
 

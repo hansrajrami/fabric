@@ -60,6 +60,11 @@ func TestMSTAnchorConfigRoundTrip(t *testing.T) {
 		ExcludeChaincodes: []string{"cc-x"},
 		BatchStrategy:     "merkle",
 		Confirmations:     12,
+		CadenceMode:       "batch",
+		CadenceN:          20,
+		CadenceInterval:   "30s",
+		CadenceMaxWait:    "2m",
+		CadenceCron:       "0 * * * *",
 	}
 	ac, err := newAppConfigWithMST(t, mstValueBytes(t, want))
 	require.NoError(t, err)
@@ -77,6 +82,14 @@ func TestMSTAnchorConfigRejectsBadEnums(t *testing.T) {
 	_, err = MSTAnchorValue(&MSTAnchorConfig{Enabled: true, ContractAddress: testContract, BatchStrategy: "quantum"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "batchStrategy")
+
+	_, err = MSTAnchorValue(&MSTAnchorConfig{Enabled: true, ContractAddress: testContract, CadenceMode: "whenever"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cadenceMode")
+
+	_, err = MSTAnchorValue(&MSTAnchorConfig{Enabled: true, ContractAddress: testContract, CadenceInterval: "30 seconds"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cadenceInterval")
 }
 
 func TestMSTAnchorConfigAbsent(t *testing.T) {

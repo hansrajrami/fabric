@@ -51,9 +51,7 @@ func TestFullConfig(t *testing.T) {
 	v.Set("mst.defaultStartBlock", 5)
 	v.Set("mst.evm.rpcURL", "http://127.0.0.1:8545")
 	v.Set("mst.evm.minBalanceGwei", 500000)
-	v.Set("mst.sender.cadenceMode", "batch")
-	v.Set("mst.sender.cadenceN", 10)
-	v.Set("mst.sender.cadenceMaxWait", "30s")
+	v.Set("mst.sender.workers", 8)
 	v.Set("mst.writeback.mspID", "Org1MSP")
 	v.Set("mst.writeback.certPath", "/etc/cert.pem")
 	v.Set("mst.writeback.keyPath", "/etc/key.pem")
@@ -74,14 +72,18 @@ func TestFullConfig(t *testing.T) {
 		ExcludeChaincodes: []string{"other"},
 		BatchStrategy:     "merkle",
 		Confirmations:     3,
+		CadenceMode:       "batch",
+		CadenceN:          10,
+		CadenceMaxWait:    "30s",
 	}
 
 	sc := cfg.SenderConfigFor(mst)
-	require.Equal(t, sender.CadenceMode("batch"), sc.Cadence.Mode) // peer-local
-	require.Equal(t, 10, sc.Cadence.N)
-	require.Equal(t, 30*time.Second, sc.Cadence.MaxWait)
-	require.Equal(t, uint64(3), sc.Confirmations)                 // channel
-	require.Equal(t, sender.BatchStrategy("merkle"), sc.Strategy) // channel
+	require.Equal(t, 8, sc.Workers)                                // peer-local
+	require.Equal(t, sender.CadenceMode("batch"), sc.Cadence.Mode) // channel
+	require.Equal(t, 10, sc.Cadence.N)                             // channel
+	require.Equal(t, 30*time.Second, sc.Cadence.MaxWait)           // channel
+	require.Equal(t, uint64(3), sc.Confirmations)                  // channel
+	require.Equal(t, sender.BatchStrategy("merkle"), sc.Strategy)  // channel
 
 	cc := cfg.CaptureConfigFor(mst)
 	require.Equal(t, uint64(5), cc.DefaultStartBlock)          // peer-local

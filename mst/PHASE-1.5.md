@@ -90,6 +90,7 @@ all-org-agreed value) rather than each peer's `core.yaml`:
 | `CaptureMode` + `IncludeChaincodes` + `ExcludeChaincodes` | which transactions are anchored (scope) |
 | `BatchStrategy` | on-chain representation + verification model (`individual`/`merkle`) |
 | `Confirmations` | finality threshold before write-back |
+| `Cadence*` (`CadenceMode`/`N`/`Interval`/`MaxWait`/`Cron`) | when the relayer flushes — the latency/gas trade-off, and the batch boundaries that shape `merkle` roots |
 | `ChainID` | which MST chain the contract lives on |
 
 Each field is optional and falls back to a fixed built-in default (never to

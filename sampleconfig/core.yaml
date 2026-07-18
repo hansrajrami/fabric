@@ -871,14 +871,9 @@ mst:
     sender:
         # 0 = default (4)
         workers: 0
-        # When flushes happen: per-tx | batch (cadenceN, cadenceMaxWait) |
-        # interval (cadenceInterval) | cron (cadenceCron, 5-field expression,
-        # e.g. "0 * * * *" hourly, "*/15 * * * *" every 15 minutes)
-        cadenceMode: per-tx
-        cadenceN: 0
-        cadenceInterval: 0s
-        cadenceMaxWait: 0s
-        cadenceCron: ""
+        # Flush cadence (per-tx/batch/interval/cron) is channel-governed - see
+        # Application.MSTAnchor in configtx.yaml. Only the local retry/timeout
+        # knobs live here.
         backoffMin: 1s
         backoffMax: 5m
         confirmTimeout: 2m

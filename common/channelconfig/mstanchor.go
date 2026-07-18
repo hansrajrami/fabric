@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -70,6 +71,29 @@ type MSTAnchorConfig struct {
 	// anchor is written back to Fabric (0 = the relayer's default). Sets one
 	// consistent finality guarantee for the channel.
 	Confirmations uint64 `json:"confirmations,omitempty"`
+
+	// Cadence controls WHEN the relayer flushes accumulated anchors to MST,
+	// and therefore how entries are grouped into each on-chain submission — the
+	// latency/gas trade-off, and (with BatchStrategy "merkle") the batch
+	// boundaries that determine each root. It is channel-governed so peers
+	// produce comparable batching rather than diverging roots.
+	//
+	// CadenceMode: "per-tx" (default, flush whatever is due), "batch" (flush at
+	// CadenceN entries or CadenceMaxWait), "interval" (flush every
+	// CadenceInterval), or "cron" (flush on CadenceCron).
+	CadenceMode string `json:"cadenceMode,omitempty"`
+	// CadenceN is the batch threshold for "batch" mode.
+	CadenceN int `json:"cadenceN,omitempty"`
+	// CadenceInterval is the flush period for "interval" mode (a Go duration
+	// string, e.g. "30s").
+	CadenceInterval string `json:"cadenceInterval,omitempty"`
+	// CadenceMaxWait caps how long an entry waits under "batch" mode even if
+	// CadenceN is never reached (a Go duration string; empty = the relayer's
+	// default).
+	CadenceMaxWait string `json:"cadenceMaxWait,omitempty"`
+	// CadenceCron is a 5-field cron expression for "cron" mode (e.g. "0 * * * *"
+	// hourly). Its syntax is validated by the peer at pipeline start, not here.
+	CadenceCron string `json:"cadenceCron,omitempty"`
 }
 
 // Allowed values for the channel-governed enum fields. These literals are kept
@@ -82,6 +106,12 @@ const (
 	mstBatchStrategyIndiv  = "individual"
 	mstBatchStrategyMerkle = "merkle"
 )
+
+// mstCadenceModes are the accepted CadenceMode values (kept in sync by hand
+// with mst/relay/sender.CadenceMode — see the enum comment above).
+var mstCadenceModes = map[string]bool{
+	"": true, "per-tx": true, "batch": true, "interval": true, "cron": true,
+}
 
 // MSTAnchorValue returns the Application-group config value carrying the given
 // MST anchoring configuration, for use by config tooling (configtxgen) and
@@ -133,11 +163,32 @@ func (c *MSTAnchorConfig) validate() error {
 	default:
 		return errors.Errorf("MSTAnchor batchStrategy must be %q or %q, got %q", mstBatchStrategyIndiv, mstBatchStrategyMerkle, c.BatchStrategy)
 	}
+	if !mstCadenceModes[c.CadenceMode] {
+		return errors.Errorf("MSTAnchor cadenceMode must be one of per-tx/batch/interval/cron, got %q", c.CadenceMode)
+	}
+	if err := validateOptionalDuration("cadenceInterval", c.CadenceInterval); err != nil {
+		return err
+	}
+	if err := validateOptionalDuration("cadenceMaxWait", c.CadenceMaxWait); err != nil {
+		return err
+	}
 	if !c.Enabled {
 		return nil
 	}
 	if err := validateEVMAddress(c.ContractAddress); err != nil {
 		return errors.Wrap(err, "MSTAnchor is enabled but contractAddress is invalid")
+	}
+	return nil
+}
+
+// validateOptionalDuration rejects a non-empty duration string that Go cannot
+// parse, so a malformed cadence duration is caught when the config is applied.
+func validateOptionalDuration(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if _, err := time.ParseDuration(value); err != nil {
+		return errors.Wrapf(err, "MSTAnchor %s is not a valid duration", field)
 	}
 	return nil
 }

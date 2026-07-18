@@ -302,6 +302,11 @@ func NewApplicationGroup(conf *genesisconfig.Application) (*cb.ConfigGroup, erro
 			ExcludeChaincodes: conf.MSTAnchor.ExcludeChaincodes,
 			BatchStrategy:     conf.MSTAnchor.BatchStrategy,
 			Confirmations:     conf.MSTAnchor.Confirmations,
+			CadenceMode:       conf.MSTAnchor.CadenceMode,
+			CadenceN:          conf.MSTAnchor.CadenceN,
+			CadenceInterval:   conf.MSTAnchor.CadenceInterval,
+			CadenceMaxWait:    conf.MSTAnchor.CadenceMaxWait,
+			CadenceCron:       conf.MSTAnchor.CadenceCron,
 		})
 		if err != nil {
 			return nil, errors.Wrap(err, "invalid MSTAnchor configuration")

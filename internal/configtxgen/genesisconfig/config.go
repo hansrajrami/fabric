@@ -133,6 +133,11 @@ type MSTAnchor struct {
 	ExcludeChaincodes []string `yaml:"ExcludeChaincodes"`
 	BatchStrategy     string   `yaml:"BatchStrategy"`
 	Confirmations     uint64   `yaml:"Confirmations"`
+	CadenceMode       string   `yaml:"CadenceMode"`
+	CadenceN          int      `yaml:"CadenceN"`
+	CadenceInterval   string   `yaml:"CadenceInterval"`
+	CadenceMaxWait    string   `yaml:"CadenceMaxWait"`
+	CadenceCron       string   `yaml:"CadenceCron"`
 }
 
 // Organization encodes the organization-level configuration needed in

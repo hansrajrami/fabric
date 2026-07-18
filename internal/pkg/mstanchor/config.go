@@ -65,15 +65,10 @@ type Config struct {
 	}
 
 	Sender struct {
-		Workers         int
-		CadenceMode     string // per-tx | batch | interval | cron
-		CadenceN        int
-		CadenceInterval time.Duration
-		CadenceMaxWait  time.Duration
-		CadenceCron     string
-		BackoffMin      time.Duration
-		BackoffMax      time.Duration
-		ConfirmTimeout  time.Duration
+		Workers        int
+		BackoffMin     time.Duration
+		BackoffMax     time.Duration
+		ConfirmTimeout time.Duration
 	}
 
 	// Outbox backend AUTO-FOLLOWS the peer's ledger.state.stateDatabase:
@@ -124,11 +119,6 @@ func FromViper(v *viper.Viper) (*Config, error) {
 	c.EVM.MinBalanceGwei = uint64(v.GetInt64("mst.evm.minBalanceGwei"))
 
 	c.Sender.Workers = v.GetInt("mst.sender.workers")
-	c.Sender.CadenceMode = v.GetString("mst.sender.cadenceMode")
-	c.Sender.CadenceCron = v.GetString("mst.sender.cadenceCron")
-	c.Sender.CadenceN = v.GetInt("mst.sender.cadenceN")
-	c.Sender.CadenceInterval = v.GetDuration("mst.sender.cadenceInterval")
-	c.Sender.CadenceMaxWait = v.GetDuration("mst.sender.cadenceMaxWait")
 	c.Sender.BackoffMin = v.GetDuration("mst.sender.backoffMin")
 	c.Sender.BackoffMax = v.GetDuration("mst.sender.backoffMax")
 	c.Sender.ConfirmTimeout = v.GetDuration("mst.sender.confirmTimeout")
@@ -229,20 +219,24 @@ func (c *Config) CaptureConfigFor(mst *channelconfig.MSTAnchorConfig) capture.Co
 	}
 }
 
-// SenderConfigFor builds the sender config for one channel: the batch strategy
-// and confirmation threshold come from the channel's configuration, the
-// remaining knobs (workers, cadence, backoff, timeouts) are peer-local.
+// SenderConfigFor builds the sender config for one channel: the batch strategy,
+// confirmation threshold, and flush cadence come from the channel's
+// configuration, while the peer-local knobs (workers, backoff, timeouts) come
+// from core.yaml. The cadence durations are already validated by channelconfig,
+// so any parse error here is treated as an unset (zero) value.
 func (c *Config) SenderConfigFor(mst *channelconfig.MSTAnchorConfig) sender.Config {
+	interval, _ := time.ParseDuration(mst.CadenceInterval)
+	maxWait, _ := time.ParseDuration(mst.CadenceMaxWait)
 	return sender.Config{
-		Confirmations: mst.Confirmations, // 0 → the sender's built-in default
-		Workers:       c.Sender.Workers,
+		Confirmations: mst.Confirmations,                       // 0 → the sender's built-in default
+		Workers:       c.Sender.Workers,                        // peer-local
 		Strategy:      sender.BatchStrategy(mst.BatchStrategy), // "" → individual
 		Cadence: sender.Cadence{
-			Mode:     sender.CadenceMode(c.Sender.CadenceMode),
-			N:        c.Sender.CadenceN,
-			Interval: c.Sender.CadenceInterval,
-			MaxWait:  c.Sender.CadenceMaxWait,
-			Cron:     c.Sender.CadenceCron,
+			Mode:     sender.CadenceMode(mst.CadenceMode), // "" → per-tx
+			N:        mst.CadenceN,
+			Interval: interval,
+			MaxWait:  maxWait,
+			Cron:     mst.CadenceCron,
 		},
 		Backoff: sender.Backoff{
 			Min: c.Sender.BackoffMin,

@@ -275,6 +275,12 @@ Application: &ApplicationDefaults
     #     # ExcludeChaincodes: []
     #     BatchStrategy: individual
     #     Confirmations: 1
+    #     # Flush cadence (latency vs gas): per-tx | batch | interval | cron
+    #     CadenceMode: per-tx
+    #     # CadenceN: 20                 # batch mode: flush at N entries
+    #     # CadenceMaxWait: 1m           # batch mode: force flush after this
+    #     # CadenceInterval: 30s         # interval mode
+    #     # CadenceCron: "0 * * * *"     # cron mode (5-field)
 
 ################################################################################
 #
