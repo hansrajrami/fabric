@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/viper"
 
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/core/scc/mstscc"
 
 	"github.com/hansrajrami/fabric/mst/relay/capture"
@@ -46,26 +47,17 @@ type Config struct {
 	Channels []string
 	// DefaultStartBlock applies when a channel has no checkpoint yet.
 	DefaultStartBlock uint64
-	// CaptureMode: "opt-in" (default) anchors only MSTProofRequest
-	// emitters; "all" anchors every valid transaction (non-opted txs get
-	// the empty payload hash — an existence proof). Batch cadence is
-	// strongly advisable with "all".
-	CaptureMode string
-	// IncludeChaincodes restricts CaptureMode "all" to these chaincodes
-	// (empty = every chaincode). Ignored in opt-in mode.
-	IncludeChaincodes []string
-	// ExcludeChaincodes are never captured; AnchorStatusChaincode is always
-	// added (echo-loop guard).
-	ExcludeChaincodes     []string
-	AnchorStatusChaincode string
+
+	// NOTE: the anchoring POLICY fields — capture mode, include/exclude
+	// chaincodes, batch strategy, confirmations, and chain id — are NOT read
+	// here. They are channel-governed (channelconfig.MSTAnchorConfig) so peers
+	// cannot diverge on what/how/where to anchor. core.yaml keeps only
+	// peer-local operational knobs.
 
 	EVM struct {
-		RPCURL          string
-		ContractAddress string
-		ChainID         uint64
-		GasLimit        uint64
-		TipCapGwei      uint64
-		Confirmations   uint64
+		RPCURL     string
+		GasLimit   uint64
+		TipCapGwei uint64
 		// MinBalanceGwei: log loudly when the relayer's gas balance drops
 		// below this (0 disables the watcher; the metrics gauge is always
 		// exposed regardless).
@@ -73,10 +65,7 @@ type Config struct {
 	}
 
 	Sender struct {
-		Workers int
-		// BatchStrategy: "individual" (default) or "merkle" (one root per
-		// flush; verifiers need inclusion proofs from mst-proof).
-		BatchStrategy   string
+		Workers         int
 		CadenceMode     string // per-tx | batch | interval | cron
 		CadenceN        int
 		CadenceInterval time.Duration
@@ -102,8 +91,8 @@ type Config struct {
 	}
 
 	// WriteBack is the relayer's Fabric identity used to submit RecordAnchor
-	// through the peer's embedded gateway. Required when
-	// AnchorStatusChaincode is set.
+	// through the peer's embedded gateway (any valid MSP identity on the
+	// channel is accepted by the mst system chaincode).
 	WriteBack struct {
 		MSPID    string
 		CertPath string
@@ -128,26 +117,13 @@ func FromViper(v *viper.Viper) (*Config, error) {
 	c.OutboxPath = v.GetString("mst.outboxPath")
 	c.Channels = v.GetStringSlice("mst.channels")
 	c.DefaultStartBlock = uint64(v.GetInt64("mst.defaultStartBlock"))
-	c.CaptureMode = v.GetString("mst.captureMode")
-	mode := capture.Mode(c.CaptureMode)
-	if err := mode.Validate(); err != nil {
-		return nil, fmt.Errorf("mstanchor: %w", err)
-	}
-	c.CaptureMode = string(mode)
-	c.IncludeChaincodes = v.GetStringSlice("mst.includeChaincodes")
-	c.ExcludeChaincodes = v.GetStringSlice("mst.excludeChaincodes")
-	c.AnchorStatusChaincode = v.GetString("mst.anchorStatusChaincode")
 
 	c.EVM.RPCURL = v.GetString("mst.evm.rpcURL")
-	c.EVM.ContractAddress = v.GetString("mst.evm.contractAddress")
-	c.EVM.ChainID = uint64(v.GetInt64("mst.evm.chainID"))
 	c.EVM.GasLimit = uint64(v.GetInt64("mst.evm.gasLimit"))
 	c.EVM.TipCapGwei = uint64(v.GetInt64("mst.evm.tipCapGwei"))
-	c.EVM.Confirmations = uint64(v.GetInt64("mst.evm.confirmations"))
 	c.EVM.MinBalanceGwei = uint64(v.GetInt64("mst.evm.minBalanceGwei"))
 
 	c.Sender.Workers = v.GetInt("mst.sender.workers")
-	c.Sender.BatchStrategy = v.GetString("mst.sender.batchStrategy")
 	c.Sender.CadenceMode = v.GetString("mst.sender.cadenceMode")
 	c.Sender.CadenceCron = v.GetString("mst.sender.cadenceCron")
 	c.Sender.CadenceN = v.GetInt("mst.sender.cadenceN")
@@ -187,20 +163,13 @@ func FromViper(v *viper.Viper) (*Config, error) {
 	if c.OutboxPath == "" {
 		return nil, fmt.Errorf("mstanchor: mst.outboxPath is required when mst.enabled is true")
 	}
-	// In Phase 1.5 the contract address is a per-channel value carried in the
-	// channel configuration, not a single core.yaml value — so only the RPC
-	// endpoint (a peer-local operational setting) is required here. Any
-	// mst.evm.contractAddress that is set is ignored by the embedded
-	// per-channel path.
+	// Only the RPC endpoint (a peer-local operational setting) is required
+	// here. The contract address, chain id, capture scope, batch strategy, and
+	// confirmations are all per-channel values carried in the channel
+	// configuration. The EVM client learns its chain id from the node at dial
+	// time; each channel's declared chainID is validated against it.
 	if c.EVM.RPCURL == "" {
 		return nil, fmt.Errorf("mstanchor: mst.evm.rpcURL is required when mst.enabled is true")
-	}
-	// Echo-loop guard: the write-back target (the mst system chaincode) must
-	// never be captured. Its name is always excluded, plus any legacy
-	// user-chaincode write-back target still configured.
-	c.ExcludeChaincodes = appendUnique(c.ExcludeChaincodes, mstscc.Name)
-	if c.AnchorStatusChaincode != "" {
-		c.ExcludeChaincodes = appendUnique(c.ExcludeChaincodes, c.AnchorStatusChaincode)
 	}
 	return c, nil
 }
@@ -231,38 +200,43 @@ func appendUnique(list []string, v string) []string {
 }
 
 // EVMConfig maps to the shared EVM client config; the key comes strictly
-// from the environment.
+// from the environment. ChainID is left 0 so the client learns the real chain
+// id from the node at dial time — each channel's declared chainID is then
+// validated against it (see service.startNewPipelines).
 func (c *Config) EVMConfig() (evm.Config, error) {
 	key := os.Getenv(EnvRelayerKey)
 	if key == "" {
 		return evm.Config{}, fmt.Errorf("mstanchor: %s environment variable is required when mst.enabled is true", EnvRelayerKey)
 	}
 	return evm.Config{
-		RPCURL:          c.EVM.RPCURL,
-		ContractAddress: c.EVM.ContractAddress,
-		PrivateKeyHex:   key,
-		ChainID:         c.EVM.ChainID,
-		GasLimit:        c.EVM.GasLimit,
-		TipCapGwei:      c.EVM.TipCapGwei,
+		RPCURL:        c.EVM.RPCURL,
+		PrivateKeyHex: key,
+		GasLimit:      c.EVM.GasLimit,
+		TipCapGwei:    c.EVM.TipCapGwei,
 	}, nil
 }
 
-// CaptureConfig maps to the shared capture config.
-func (c *Config) CaptureConfig() capture.Config {
+// CaptureConfigFor builds the capture config for one channel: the capture
+// scope (mode + include/exclude chaincodes) comes from the channel's own
+// configuration, the start block is peer-local. The mst system chaincode is
+// always excluded (echo-loop guard) regardless of the channel's exclude list.
+func (c *Config) CaptureConfigFor(mst *channelconfig.MSTAnchorConfig) capture.Config {
 	return capture.Config{
-		Mode:              capture.Mode(c.CaptureMode),
+		Mode:              capture.Mode(mst.CaptureMode), // "" normalizes to opt-in
 		DefaultStartBlock: c.DefaultStartBlock,
-		ExcludeChaincodes: c.ExcludeChaincodes,
-		IncludeChaincodes: c.IncludeChaincodes,
+		ExcludeChaincodes: appendUnique(append([]string(nil), mst.ExcludeChaincodes...), mstscc.Name),
+		IncludeChaincodes: mst.IncludeChaincodes,
 	}
 }
 
-// SenderConfig maps to the shared sender config.
-func (c *Config) SenderConfig() sender.Config {
+// SenderConfigFor builds the sender config for one channel: the batch strategy
+// and confirmation threshold come from the channel's configuration, the
+// remaining knobs (workers, cadence, backoff, timeouts) are peer-local.
+func (c *Config) SenderConfigFor(mst *channelconfig.MSTAnchorConfig) sender.Config {
 	return sender.Config{
-		Confirmations: c.EVM.Confirmations,
+		Confirmations: mst.Confirmations, // 0 → the sender's built-in default
 		Workers:       c.Sender.Workers,
-		Strategy:      sender.BatchStrategy(c.Sender.BatchStrategy),
+		Strategy:      sender.BatchStrategy(mst.BatchStrategy), // "" → individual
 		Cadence: sender.Cadence{
 			Mode:     sender.CadenceMode(c.Sender.CadenceMode),
 			N:        c.Sender.CadenceN,

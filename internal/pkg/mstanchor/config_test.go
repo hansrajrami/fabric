@@ -12,6 +12,9 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hyperledger/fabric/common/channelconfig"
+	"github.com/hyperledger/fabric/core/scc/mstscc"
+
 	"github.com/hansrajrami/fabric/mst/relay/capture"
 	"github.com/hansrajrami/fabric/mst/relay/sender"
 )
@@ -34,31 +37,20 @@ func TestEnabledRequiresCoreSettings(t *testing.T) {
 	_, err := FromViper(v)
 	require.ErrorContains(t, err, "outboxPath")
 
-	v.Set("mst.captureMode", "everything")
-	_, err = FromViper(v)
-	require.ErrorContains(t, err, "unknown mode")
-	v.Set("mst.captureMode", "")
-
 	v.Set("mst.outboxPath", "/var/mst")
 	_, err = FromViper(v)
 	require.ErrorContains(t, err, "rpcURL")
 }
 
 func TestFullConfig(t *testing.T) {
+	// core.yaml carries only peer-local operational knobs now.
 	v := viper.New()
 	v.Set("mst.enabled", true)
 	v.Set("mst.outboxPath", "/var/mst")
 	v.Set("mst.channels", []string{"mychannel"})
 	v.Set("mst.defaultStartBlock", 5)
-	v.Set("mst.anchorStatusChaincode", "mst-anchor-status")
-	v.Set("mst.excludeChaincodes", []string{"other"})
 	v.Set("mst.evm.rpcURL", "http://127.0.0.1:8545")
-	v.Set("mst.evm.contractAddress", "0xabc")
-	v.Set("mst.evm.confirmations", 3)
 	v.Set("mst.evm.minBalanceGwei", 500000)
-	v.Set("mst.captureMode", "all")
-	v.Set("mst.includeChaincodes", []string{"assets"})
-	v.Set("mst.sender.batchStrategy", "merkle")
 	v.Set("mst.sender.cadenceMode", "batch")
 	v.Set("mst.sender.cadenceN", 10)
 	v.Set("mst.sender.cadenceMaxWait", "30s")
@@ -69,25 +61,36 @@ func TestFullConfig(t *testing.T) {
 	cfg, err := FromViper(v)
 	require.NoError(t, err)
 	require.True(t, cfg.Enabled)
-	// echo-loop guard: anchor-status chaincode force-added to exclusions
-	require.Contains(t, cfg.ExcludeChaincodes, "mst-anchor-status")
-	require.Contains(t, cfg.ExcludeChaincodes, "other")
-
 	require.True(t, cfg.channelAllowed("mychannel"))
 	require.False(t, cfg.channelAllowed("otherchannel"))
-
-	sc := cfg.SenderConfig()
-	require.Equal(t, sender.CadenceMode("batch"), sc.Cadence.Mode)
-	require.Equal(t, 10, sc.Cadence.N)
-	require.Equal(t, 30*time.Second, sc.Cadence.MaxWait)
-	require.Equal(t, uint64(3), sc.Confirmations)
-	require.Equal(t, sender.BatchStrategy("merkle"), sc.Strategy)
 	require.Equal(t, uint64(500000), cfg.EVM.MinBalanceGwei)
 
-	cc := cfg.CaptureConfig()
-	require.Equal(t, uint64(5), cc.DefaultStartBlock)
-	require.Equal(t, capture.ModeAll, cc.Mode)
-	require.Equal(t, []string{"assets"}, cc.IncludeChaincodes)
+	// The anchoring policy is channel-governed: the per-channel builders take
+	// capture scope, batch strategy, and confirmations from the channel config,
+	// keeping only the peer-local knobs from core.yaml.
+	mst := &channelconfig.MSTAnchorConfig{
+		CaptureMode:       "all",
+		IncludeChaincodes: []string{"assets"},
+		ExcludeChaincodes: []string{"other"},
+		BatchStrategy:     "merkle",
+		Confirmations:     3,
+	}
+
+	sc := cfg.SenderConfigFor(mst)
+	require.Equal(t, sender.CadenceMode("batch"), sc.Cadence.Mode) // peer-local
+	require.Equal(t, 10, sc.Cadence.N)
+	require.Equal(t, 30*time.Second, sc.Cadence.MaxWait)
+	require.Equal(t, uint64(3), sc.Confirmations)                 // channel
+	require.Equal(t, sender.BatchStrategy("merkle"), sc.Strategy) // channel
+
+	cc := cfg.CaptureConfigFor(mst)
+	require.Equal(t, uint64(5), cc.DefaultStartBlock)          // peer-local
+	require.Equal(t, capture.ModeAll, cc.Mode)                 // channel
+	require.Equal(t, []string{"assets"}, cc.IncludeChaincodes) // channel
+	// echo-loop guard: the mst system chaincode is always excluded, alongside
+	// the channel's own excludes.
+	require.Contains(t, cc.ExcludeChaincodes, mstscc.Name)
+	require.Contains(t, cc.ExcludeChaincodes, "other")
 }
 
 func TestEVMKeyFromEnvOnly(t *testing.T) {
@@ -95,7 +98,6 @@ func TestEVMKeyFromEnvOnly(t *testing.T) {
 	v.Set("mst.enabled", true)
 	v.Set("mst.outboxPath", "/var/mst")
 	v.Set("mst.evm.rpcURL", "http://127.0.0.1:8545")
-	v.Set("mst.evm.contractAddress", "0xabc")
 	cfg, err := FromViper(v)
 	require.NoError(t, err)
 
@@ -120,7 +122,6 @@ func TestOutboxFollowsPeerStateDatabase(t *testing.T) {
 		v.Set("mst.enabled", true)
 		v.Set("mst.outboxPath", "/var/mst")
 		v.Set("mst.evm.rpcURL", "http://127.0.0.1:8545")
-		v.Set("mst.evm.contractAddress", "0xabc")
 		return v
 	}
 

@@ -294,9 +294,14 @@ func NewApplicationGroup(conf *genesisconfig.Application) (*cb.ConfigGroup, erro
 
 	if conf.MSTAnchor != nil {
 		mstValue, err := channelconfig.MSTAnchorValue(&channelconfig.MSTAnchorConfig{
-			Enabled:         conf.MSTAnchor.Enabled,
-			ContractAddress: conf.MSTAnchor.ContractAddress,
-			ChainID:         conf.MSTAnchor.ChainID,
+			Enabled:           conf.MSTAnchor.Enabled,
+			ContractAddress:   conf.MSTAnchor.ContractAddress,
+			ChainID:           conf.MSTAnchor.ChainID,
+			CaptureMode:       conf.MSTAnchor.CaptureMode,
+			IncludeChaincodes: conf.MSTAnchor.IncludeChaincodes,
+			ExcludeChaincodes: conf.MSTAnchor.ExcludeChaincodes,
+			BatchStrategy:     conf.MSTAnchor.BatchStrategy,
+			Confirmations:     conf.MSTAnchor.Confirmations,
 		})
 		if err != nil {
 			return nil, errors.Wrap(err, "invalid MSTAnchor configuration")

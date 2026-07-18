@@ -510,6 +510,9 @@ var _ = Describe("Encoder", func() {
 					Enabled:         true,
 					ContractAddress: "0x1234567890abcdef1234567890abcdef12345678",
 					ChainID:         1337,
+					CaptureMode:     "all",
+					BatchStrategy:   "merkle",
+					Confirmations:   6,
 				}
 			})
 
@@ -518,6 +521,17 @@ var _ = Describe("Encoder", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(cg.Values)).To(Equal(3))
 				Expect(cg.Values["MSTAnchor"]).NotTo(BeNil())
+			})
+
+			Context("and an enum field is invalid", func() {
+				BeforeEach(func() {
+					conf.MSTAnchor.CaptureMode = "occasionally"
+				})
+
+				It("wraps and returns the error", func() {
+					_, err := encoder.NewApplicationGroup(conf)
+					Expect(err).To(MatchError(ContainSubstring("invalid MSTAnchor configuration")))
+				})
 			})
 
 			Context("and the contract address is invalid", func() {

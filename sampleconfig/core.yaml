@@ -839,42 +839,30 @@ mst:
     #         address: ""
     #         username: ""
     #         password: ""
-    # Channels to anchor; empty means every channel this peer joins.
+    # Channels to anchor; empty means every channel this peer joins. This is a
+    # peer-local opt-out only - whether a channel anchors at all is decided by
+    # the channel configuration (see below), not here.
     channels: []
     # First block to capture when a channel has no checkpoint yet.
     defaultStartBlock: 0
-    # What to anchor:
-    #   opt-in (default): only transactions whose chaincode emits the
-    #                     MSTProofRequest event, with their declared fields.
-    #   all:              EVERY valid transaction. Opted-in txs keep their
-    #                     declared payloads; all others are anchored with the
-    #                     empty payload hash (existence-and-timing proof,
-    #                     verifiable with mst-verify --payload-hex 0x00000000).
-    #                     Gas cost scales with channel traffic - use a batch
-    #                     cadence. System chaincodes (_lifecycle, lscc, cscc,
-    #                     qscc, vscc) and excluded chaincodes are never
-    #                     anchored.
-    captureMode: opt-in
-    # Restrict captureMode "all" to these chaincodes (empty = every
-    # chaincode). Ignored in opt-in mode.
-    includeChaincodes: []
-    # Chaincodes whose transactions/proof requests are ignored.
-    excludeChaincodes: []
-    # Write-back chaincode recording anchor status on Fabric. Requires the
-    # embedded gateway (peer.gateway.enabled) and the writeback identity
-    # below. Automatically excluded from capture (echo-loop guard).
-    anchorStatusChaincode: ""
+    #
+    # NOTE: the anchoring POLICY is channel-governed, NOT set here. The channel
+    # configuration (Application.MSTAnchor in configtx.yaml) carries, per
+    # channel and agreed by all orgs: whether anchoring is enabled, the
+    # per-channel contract address, the chain id, the capture scope
+    # (captureMode + include/exclude chaincodes), the batch strategy
+    # (individual/merkle), and the confirmations threshold. Keeping these at the
+    # channel level guarantees every peer anchors the same transactions, the
+    # same way, to the same chain. core.yaml keeps only peer-local plumbing.
+    #
     evm:
+        # This peer's MST RPC endpoint. Its chain id is learned from the node at
+        # startup and validated against each channel's declared chainID.
         rpcURL: http://127.0.0.1:8545
-        contractAddress: ""
-        # 0 = fetch from the node at startup
-        chainID: 0
         # 0 = default (200000)
         gasLimit: 0
         # 0 = let the node suggest the priority fee
         tipCapGwei: 0
-        # Confirmations before an anchor counts as final (reorg guard).
-        confirmations: 1
         # Log loudly (once a minute) while the relayer's gas balance is
         # below this many gwei; 0 disables the watcher. The balance is
         # always exposed on the metrics endpoint as
@@ -883,15 +871,6 @@ mst:
     sender:
         # 0 = default (4)
         workers: 0
-        # How a flush reaches the chain:
-        #   individual (default): one on-chain record per transaction; a
-        #       multi-entry flush shares one EVM transaction (anchorBatch,
-        #       ~40% gas saving). Verification unchanged.
-        #   merkle: one on-chain record per flush - the Merkle root over the
-        #       entries' commitments (~95% gas saving at batches of 20).
-        #       Verifying a single tx additionally needs its inclusion proof
-        #       (export with mst-proof; verify with mst-verify --batch-proof).
-        batchStrategy: individual
         # When flushes happen: per-tx | batch (cadenceN, cadenceMaxWait) |
         # interval (cadenceInterval) | cron (cadenceCron, 5-field expression,
         # e.g. "0 * * * *" hourly, "*/15 * * * *" every 15 minutes)

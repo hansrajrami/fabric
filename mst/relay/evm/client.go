@@ -176,6 +176,10 @@ func (b *Binding) WaitConfirmed(ctx context.Context, txHash [32]byte, confirmati
 // Sender returns the relayer's EVM address.
 func (c *Client) Sender() string { return c.sender.Hex() }
 
+// ChainID returns the id of the chain the client is connected to (learned from
+// the node at dial time unless pinned in config).
+func (c *Client) ChainID() uint64 { return c.chainID.Uint64() }
+
 // Balance returns the relayer account's current balance in wei. The account
 // pays gas for every anchor; when it runs dry, anchoring stalls safely into
 // the outbox but silently — the sender's balance watcher and metrics gauge

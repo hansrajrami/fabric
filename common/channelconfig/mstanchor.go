@@ -39,10 +39,49 @@ type MSTAnchorConfig struct {
 	// anchor histories stay isolated on the MST chain. The operator deploys the
 	// contract out of band and records its address here at channel creation.
 	ContractAddress string `json:"contractAddress"`
-	// ChainID is the MST EVM chain id the contract lives on (0 = let the peer's
-	// operational config / node decide).
+	// ChainID is the MST EVM chain id the contract lives on. It is validated
+	// against the chain the peer is actually connected to; a peer refuses to
+	// anchor a channel whose ChainID does not match its node (0 = skip the
+	// check and trust the peer's connected chain).
 	ChainID uint64 `json:"chainID"`
+
+	// The following fields are channel-governed anchoring policy: keeping them
+	// here (rather than in each peer's core.yaml) guarantees every peer on the
+	// channel anchors the same transactions, the same way, to the same chain —
+	// per-peer divergence in these would produce inconsistent or ambiguous
+	// anchoring that the idempotent contract cannot reconcile. All are optional;
+	// an omitted field falls back to the built-in default, never to core.yaml.
+
+	// CaptureMode selects which transactions are anchored: "opt-in" (default,
+	// only MSTProofRequest emitters) or "all" (every valid transaction).
+	CaptureMode string `json:"captureMode,omitempty"`
+	// IncludeChaincodes restricts CaptureMode "all" to these chaincodes (empty =
+	// every chaincode). Ignored in opt-in mode.
+	IncludeChaincodes []string `json:"includeChaincodes,omitempty"`
+	// ExcludeChaincodes are never captured (in addition to the mst system
+	// chaincode, which is always excluded as the echo-loop guard).
+	ExcludeChaincodes []string `json:"excludeChaincodes,omitempty"`
+	// BatchStrategy selects the on-chain representation: "individual" (default,
+	// one record per tx) or "merkle" (one root per flush; verifiers need
+	// inclusion proofs). This is the channel's verification model, so it must be
+	// uniform across peers.
+	BatchStrategy string `json:"batchStrategy,omitempty"`
+	// Confirmations is the number of MST confirmations required before the
+	// anchor is written back to Fabric (0 = the relayer's default). Sets one
+	// consistent finality guarantee for the channel.
+	Confirmations uint64 `json:"confirmations,omitempty"`
 }
+
+// Allowed values for the channel-governed enum fields. These literals are kept
+// in sync by hand with mst/relay/capture.Mode and mst/relay/sender.BatchStrategy
+// — channelconfig is a low-level core package and must not import the relay
+// module (which would pull go-ethereum into its dependency graph).
+const (
+	mstCaptureModeOptIn    = "opt-in"
+	mstCaptureModeAll      = "all"
+	mstBatchStrategyIndiv  = "individual"
+	mstBatchStrategyMerkle = "merkle"
+)
 
 // MSTAnchorValue returns the Application-group config value carrying the given
 // MST anchoring configuration, for use by config tooling (configtxgen) and
@@ -84,6 +123,16 @@ func unmarshalMSTAnchorConfig(raw []byte) (*MSTAnchorConfig, error) {
 // a misconfiguration is visible when the config is applied, not later when the
 // first transaction fails to anchor.
 func (c *MSTAnchorConfig) validate() error {
+	switch c.CaptureMode {
+	case "", mstCaptureModeOptIn, mstCaptureModeAll:
+	default:
+		return errors.Errorf("MSTAnchor captureMode must be %q or %q, got %q", mstCaptureModeOptIn, mstCaptureModeAll, c.CaptureMode)
+	}
+	switch c.BatchStrategy {
+	case "", mstBatchStrategyIndiv, mstBatchStrategyMerkle:
+	default:
+		return errors.Errorf("MSTAnchor batchStrategy must be %q or %q, got %q", mstBatchStrategyIndiv, mstBatchStrategyMerkle, c.BatchStrategy)
+	}
 	if !c.Enabled {
 		return nil
 	}

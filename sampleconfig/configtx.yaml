@@ -259,10 +259,22 @@ Application: &ApplicationDefaults
     # (with mstscc in chaincode.system) for anchoring to work. Left unset, the
     # channel does not anchor to MST and behaves like a normal channel.
     #
+    # Besides Enabled/ContractAddress/ChainID, the anchoring POLICY lives here
+    # too (not in each peer's core.yaml) so every peer on the channel anchors
+    # the same transactions, the same way: CaptureMode ("opt-in"/"all"),
+    # Include/ExcludeChaincodes (the anchoring scope), BatchStrategy
+    # ("individual"/"merkle", the verification model), and Confirmations (the
+    # finality threshold). All are optional and default sensibly.
+    #
     # MSTAnchor:
     #     Enabled: true
     #     ContractAddress: "0xYourPerChannelMSTAnchorContractAddress0000"
     #     ChainID: 1337
+    #     CaptureMode: opt-in
+    #     # IncludeChaincodes: [myapp]
+    #     # ExcludeChaincodes: []
+    #     BatchStrategy: individual
+    #     Confirmations: 1
 
 ################################################################################
 #

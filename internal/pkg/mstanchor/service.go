@@ -178,6 +178,14 @@ func (s *Service) startNewPipelines(ctx context.Context) {
 			s.warnOnce(channelID, "channel enabled MST anchoring in its config but this peer's mst.channels allowlist excludes it; not anchoring")
 			continue
 		}
+		// A peer has one RPC endpoint and therefore one chain. If the channel
+		// declares a different chain id than the peer is connected to, anchoring
+		// it would write to the wrong chain — refuse (a peer's core.yaml must
+		// point at the right MST node for the channels it anchors).
+		if mstCfg.ChainID != 0 && s.client.ChainID() != 0 && mstCfg.ChainID != s.client.ChainID() {
+			s.warnOnce(channelID, fmt.Sprintf("channel MST chainID %d does not match the peer's connected chain %d; not anchoring", mstCfg.ChainID, s.client.ChainID()))
+			continue
+		}
 		s.mu.Lock()
 		_, running := s.pipelines[channelID]
 		s.mu.Unlock()
@@ -244,7 +252,10 @@ func (s *Service) startPipeline(ctx context.Context, channelID string, mstCfg *c
 		return err
 	}
 
-	snd, err := sender.New(store, binding, s.writeback, s.cfg.SenderConfig(), nil)
+	// Capture scope, batch strategy, and confirmations are channel-governed:
+	// read them from the channel's config so all peers anchor identically.
+	captureCfg := s.cfg.CaptureConfigFor(mstCfg)
+	snd, err := sender.New(store, binding, s.writeback, s.cfg.SenderConfigFor(mstCfg), nil)
 	if err != nil {
 		store.Close()
 		return err
@@ -264,7 +275,7 @@ func (s *Service) startPipeline(ctx context.Context, channelID string, mstCfg *c
 		defer s.wg.Done()
 		backoff := time.Second
 		for {
-			svc := capture.New(source, store, s.cfg.CaptureConfig(), nil)
+			svc := capture.New(source, store, captureCfg, nil)
 			err := svc.Run(ctx)
 			if ctx.Err() != nil {
 				return

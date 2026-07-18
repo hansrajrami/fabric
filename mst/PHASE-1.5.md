@@ -67,11 +67,39 @@ Application:
         Enabled: true
         ContractAddress: "0xYourPerChannelContract…"
         ChainID: 1337
+        CaptureMode: opt-in          # or "all"
+        # IncludeChaincodes: [myapp] # "all" mode scope
+        # ExcludeChaincodes: []
+        BatchStrategy: individual    # or "merkle"
+        Confirmations: 1
 ```
 
 `configtxgen` encodes it (`internal/configtxgen/encoder`); turning it on or off
 later is an ordinary channel config update, subject to the Application group's
 modification policy (all-org agreement).
+
+**The anchoring *policy* is channel-governed, not per-peer.** Because every peer
+on a channel anchors the same transactions to the same contract, any per-peer
+disagreement about *what/how/where* to anchor would produce inconsistent or
+ambiguous anchoring that the idempotent contract cannot reconcile. So alongside
+`Enabled`/`ContractAddress`, the following live in the channel config (one
+all-org-agreed value) rather than each peer's `core.yaml`:
+
+| Channel field | Governs |
+|---|---|
+| `CaptureMode` + `IncludeChaincodes` + `ExcludeChaincodes` | which transactions are anchored (scope) |
+| `BatchStrategy` | on-chain representation + verification model (`individual`/`merkle`) |
+| `Confirmations` | finality threshold before write-back |
+| `ChainID` | which MST chain the contract lives on |
+
+Each field is optional and falls back to a fixed built-in default (never to
+`core.yaml`), so peers cannot diverge even if a field is omitted. `core.yaml`
+keeps only peer-local plumbing (RPC URL, relayer key, outbox path, workers,
+cadence, gas tuning, metrics). `ChainID` is a validated assertion: a peer has one
+RPC endpoint, so it refuses to anchor a channel whose `ChainID` does not match
+the chain its node reports (`internal/pkg/mstanchor/service.go`). **Limitation:**
+promoted fields are read when a channel's pipeline starts; changing one via a
+later config update takes effect on pipeline restart (same as enablement today).
 
 ### 2. System chaincode (`core/scc/mstscc`)
 

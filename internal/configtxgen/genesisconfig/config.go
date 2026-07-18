@@ -127,6 +127,12 @@ type MSTAnchor struct {
 	Enabled         bool   `yaml:"Enabled"`
 	ContractAddress string `yaml:"ContractAddress"`
 	ChainID         uint64 `yaml:"ChainID"`
+	// Channel-governed anchoring policy (see channelconfig.MSTAnchorConfig).
+	CaptureMode       string   `yaml:"CaptureMode"`
+	IncludeChaincodes []string `yaml:"IncludeChaincodes"`
+	ExcludeChaincodes []string `yaml:"ExcludeChaincodes"`
+	BatchStrategy     string   `yaml:"BatchStrategy"`
+	Confirmations     uint64   `yaml:"Confirmations"`
 }
 
 // Organization encodes the organization-level configuration needed in

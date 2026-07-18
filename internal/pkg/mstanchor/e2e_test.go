@@ -381,6 +381,61 @@ func TestE2EChannelConfigGate(t *testing.T) {
 	require.Equal(t, int32(500), q.Status, "querying a disabled channel is rejected by the gate")
 }
 
+// captureWithConfig runs capture over one block with the given (per-channel)
+// capture config and returns once the block has been processed (checkpoint
+// advanced), regardless of how many entries it produced.
+func captureWithConfig(t *testing.T, store outbox.Store, cfg capture.Config, block *commonledger.QueryResult) {
+	t.Helper()
+	iter := &fakeIterator{results: []commonledger.QueryResult{*block}, closed: make(chan struct{})}
+	source := newLedgerSource(&fakeLedger{iter: iter}, flogging.MustGetLogger("e2e"))
+	svc := capture.New(source, store, cfg, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.Run(ctx) }()
+	require.Eventually(t, func() bool {
+		next, ok, err := store.Checkpoint()
+		return err == nil && ok && next >= 1
+	}, 5*time.Second, 10*time.Millisecond, "block must be processed")
+	cancel()
+	require.NoError(t, <-done)
+}
+
+// TestE2EPerChannelCaptureScope proves the promoted capture scope is read from
+// channel config and actually changes what gets anchored: the same plain
+// (non-opted-in) transaction is captured on an "all" channel but not on an
+// "opt-in" channel — using the peer's CaptureConfigFor builder end to end.
+func TestE2EPerChannelCaptureScope(t *testing.T) {
+	peerCfg := &Config{} // only peer-local knobs; scope comes from the channel
+
+	plainBlock := func() *commonledger.QueryResult {
+		// No eventName → not opted in.
+		block := buildBlock(t, 0, txSpec{
+			txID: testTxID("51"), channel: "ch", ts: 1720000001, valid: true,
+			chaincode: "mst-example",
+		})
+		var qr commonledger.QueryResult = block
+		return &qr
+	}
+
+	// Channel configured "all": the plain tx IS captured.
+	storeAll, err := outbox.Open(t.TempDir(), &outbox.Options{NoSync: true})
+	require.NoError(t, err)
+	defer storeAll.Close()
+	captureWithConfig(t, storeAll, peerCfg.CaptureConfigFor(&channelconfig.MSTAnchorConfig{CaptureMode: "all"}), plainBlock())
+	pendingAll, err := storeAll.ListByStatus(outbox.StatusPending, 0)
+	require.NoError(t, err)
+	require.Len(t, pendingAll, 1, `"all" mode anchors the plain transaction`)
+
+	// Channel configured "opt-in" (default): the same plain tx is NOT captured.
+	storeOpt, err := outbox.Open(t.TempDir(), &outbox.Options{NoSync: true})
+	require.NoError(t, err)
+	defer storeOpt.Close()
+	captureWithConfig(t, storeOpt, peerCfg.CaptureConfigFor(&channelconfig.MSTAnchorConfig{CaptureMode: "opt-in"}), plainBlock())
+	pendingOpt, err := storeOpt.ListByStatus(outbox.StatusPending, 0)
+	require.NoError(t, err)
+	require.Empty(t, pendingOpt, `"opt-in" mode ignores the non-opted transaction`)
+}
+
 // TestE2EEchoLoopGuard proves the write-back is idempotent and never emits an
 // event, so it can never re-enter the capture pipeline.
 func TestE2EEchoLoopGuard(t *testing.T) {

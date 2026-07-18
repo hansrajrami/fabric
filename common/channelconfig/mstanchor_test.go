@@ -51,15 +51,32 @@ func newAppConfigWithMST(t *testing.T, mstVal []byte) (*ApplicationConfig, error
 }
 
 func TestMSTAnchorConfigRoundTrip(t *testing.T) {
-	want := &MSTAnchorConfig{Enabled: true, ContractAddress: testContract, ChainID: 1337}
+	want := &MSTAnchorConfig{
+		Enabled:           true,
+		ContractAddress:   testContract,
+		ChainID:           1337,
+		CaptureMode:       "all",
+		IncludeChaincodes: []string{"cc-a", "cc-b"},
+		ExcludeChaincodes: []string{"cc-x"},
+		BatchStrategy:     "merkle",
+		Confirmations:     12,
+	}
 	ac, err := newAppConfigWithMST(t, mstValueBytes(t, want))
 	require.NoError(t, err)
 
 	got, ok := ac.MSTAnchorConfig()
 	require.True(t, ok, "MST config must be present")
-	require.Equal(t, want.Enabled, got.Enabled)
-	require.Equal(t, want.ContractAddress, got.ContractAddress)
-	require.Equal(t, want.ChainID, got.ChainID)
+	require.Equal(t, want, got)
+}
+
+func TestMSTAnchorConfigRejectsBadEnums(t *testing.T) {
+	_, err := MSTAnchorValue(&MSTAnchorConfig{Enabled: true, ContractAddress: testContract, CaptureMode: "sometimes"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "captureMode")
+
+	_, err = MSTAnchorValue(&MSTAnchorConfig{Enabled: true, ContractAddress: testContract, BatchStrategy: "quantum"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "batchStrategy")
 }
 
 func TestMSTAnchorConfigAbsent(t *testing.T) {
