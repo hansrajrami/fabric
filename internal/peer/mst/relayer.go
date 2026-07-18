@@ -85,8 +85,9 @@ func relayerCmd(cryptoProvider bccsp.BCCSP) *cobra.Command {
 			if !allowed {
 				verb = "removed from"
 			}
-			fmt.Printf("%s %s the relayer allowlist on %s\n", wallet, verb, mstCfg.ContractAddress)
-			fmt.Printf("evm tx: 0x%s\n", hex.EncodeToString(txHash[:]))
+			w := cmd.OutOrStdout()
+			fmt.Fprintf(w, "%s %s the relayer allowlist on %s\n", wallet, verb, mstCfg.ContractAddress)
+			fmt.Fprintf(w, "evm tx: 0x%s\n", hex.EncodeToString(txHash[:]))
 			return nil
 		},
 	}

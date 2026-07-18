@@ -34,27 +34,28 @@ func channelConfigCmd(cryptoProvider bccsp.BCCSP) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			w := cmd.OutOrStdout()
 			if jsonOutput {
 				out, err := json.MarshalIndent(mstCfg, "", "  ")
 				if err != nil {
 					return err
 				}
-				fmt.Println(string(out))
+				fmt.Fprintln(w, string(out))
 				return nil
 			}
-			fmt.Printf("enabled           : %t\n", mstCfg.Enabled)
-			fmt.Printf("contract address  : %s\n", mstCfg.ContractAddress)
-			fmt.Printf("chain id          : %d\n", mstCfg.ChainID)
-			fmt.Printf("capture mode      : %s\n", orDefault(mstCfg.CaptureMode, "opt-in"))
+			fmt.Fprintf(w, "enabled           : %t\n", mstCfg.Enabled)
+			fmt.Fprintf(w, "contract address  : %s\n", mstCfg.ContractAddress)
+			fmt.Fprintf(w, "chain id          : %d\n", mstCfg.ChainID)
+			fmt.Fprintf(w, "capture mode      : %s\n", orDefault(mstCfg.CaptureMode, "opt-in"))
 			if len(mstCfg.IncludeChaincodes) > 0 {
-				fmt.Printf("include chaincodes: %v\n", mstCfg.IncludeChaincodes)
+				fmt.Fprintf(w, "include chaincodes: %v\n", mstCfg.IncludeChaincodes)
 			}
 			if len(mstCfg.ExcludeChaincodes) > 0 {
-				fmt.Printf("exclude chaincodes: %v\n", mstCfg.ExcludeChaincodes)
+				fmt.Fprintf(w, "exclude chaincodes: %v\n", mstCfg.ExcludeChaincodes)
 			}
-			fmt.Printf("batch strategy    : %s\n", orDefault(mstCfg.BatchStrategy, "individual"))
-			fmt.Printf("confirmations     : %d\n", mstCfg.Confirmations)
-			fmt.Printf("cadence           : %s\n", cadenceSummary(mstCfg))
+			fmt.Fprintf(w, "batch strategy    : %s\n", orDefault(mstCfg.BatchStrategy, "individual"))
+			fmt.Fprintf(w, "confirmations     : %d\n", mstCfg.Confirmations)
+			fmt.Fprintf(w, "cadence           : %s\n", cadenceSummary(mstCfg))
 			return nil
 		},
 	}
@@ -101,14 +102,15 @@ func onchainCmd(cryptoProvider bccsp.BCCSP) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			w := cmd.OutOrStdout()
 			if rec == nil || !rec.Exists {
-				fmt.Printf("not anchored on contract %s\n", mstCfg.ContractAddress)
+				fmt.Fprintf(w, "not anchored on contract %s\n", mstCfg.ContractAddress)
 				return nil
 			}
-			fmt.Printf("contract    : %s\n", mstCfg.ContractAddress)
-			fmt.Printf("commitment  : 0x%s\n", hex.EncodeToString(rec.Commitment[:]))
-			fmt.Printf("block number: %d\n", rec.BlockNumber)
-			fmt.Printf("evm time    : %d\n", rec.EVMTimestamp)
+			fmt.Fprintf(w, "contract    : %s\n", mstCfg.ContractAddress)
+			fmt.Fprintf(w, "commitment  : 0x%s\n", hex.EncodeToString(rec.Commitment[:]))
+			fmt.Fprintf(w, "block number: %d\n", rec.BlockNumber)
+			fmt.Fprintf(w, "evm time    : %d\n", rec.EVMTimestamp)
 			return nil
 		},
 	}

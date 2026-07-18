@@ -83,23 +83,24 @@ func verifyCmd(cryptoProvider bccsp.BCCSP) *cobra.Command {
 				return err
 			}
 
-			fmt.Printf("commitment       : 0x%s\n", hex.EncodeToString(result.Commitment[:]))
+			w := cmd.OutOrStdout()
+			fmt.Fprintf(w, "commitment       : 0x%s\n", hex.EncodeToString(result.Commitment[:]))
 			if recordedRef != "" {
-				fmt.Printf("fabric ledger fact: recorded (ref %s)\n", recordedRef)
+				fmt.Fprintf(w, "fabric ledger fact: recorded (ref %s)\n", recordedRef)
 			} else {
-				fmt.Printf("fabric ledger fact: NOT recorded on this channel\n")
+				fmt.Fprintf(w, "fabric ledger fact: NOT recorded on this channel\n")
 			}
 			if result.OnChain != nil && result.OnChain.Exists {
-				fmt.Printf("on-chain anchor  : commitment 0x%s, block %d\n",
+				fmt.Fprintf(w, "on-chain anchor  : commitment 0x%s, block %d\n",
 					hex.EncodeToString(result.OnChain.Commitment[:]), result.OnChain.BlockNumber)
 			} else {
-				fmt.Printf("on-chain anchor  : NOT found on contract %s\n", mstCfg.ContractAddress)
+				fmt.Fprintf(w, "on-chain anchor  : NOT found on contract %s\n", mstCfg.ContractAddress)
 			}
 			if result.Match {
-				fmt.Println("MATCH")
+				fmt.Fprintln(w, "MATCH")
 				return nil
 			}
-			fmt.Println("NO-MATCH")
+			fmt.Fprintln(w, "NO-MATCH")
 			return fmt.Errorf("verification failed: the recomputed commitment does not match the on-chain anchor")
 		},
 	}

@@ -34,19 +34,20 @@ func pipelineCmd() *cobra.Command {
 				base = "http://" + base
 			}
 			client := &http.Client{Timeout: 5 * time.Second}
+			w := cmd.OutOrStdout()
 
 			// Liveness.
-			if body, err := httpGet(client, base+"/healthz"); err != nil {
+			body, err := httpGet(client, base+"/healthz")
+			if err != nil {
 				return fmt.Errorf("relayer metrics endpoint unreachable at %s: %w", addr, err)
-			} else {
-				fmt.Printf("relayer      : %s\n", strings.TrimSpace(body))
 			}
+			fmt.Fprintf(w, "relayer      : %s\n", strings.TrimSpace(body))
 
 			metrics, err := httpGet(client, base+"/metrics")
 			if err != nil {
 				return fmt.Errorf("reading /metrics: %w", err)
 			}
-			renderMetrics(metrics)
+			renderMetrics(w, metrics)
 			return nil
 		},
 	}
@@ -72,24 +73,22 @@ func httpGet(client *http.Client, url string) (string, error) {
 // renderMetrics prints the interesting MST gauges from the Prometheus text
 // exposition: per-channel outbox entry counts and the relayer gas balance.
 // Comment lines demarcate channels ("# channel <id>") and the relayer account.
-func renderMetrics(text string) {
-	var channel string
+func renderMetrics(w io.Writer, text string) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimRight(line, "\r")
 		switch {
 		case strings.HasPrefix(line, "# channel "):
-			channel = strings.TrimPrefix(line, "# channel ")
-			fmt.Printf("channel %s\n", channel)
+			fmt.Fprintf(w, "channel %s\n", strings.TrimPrefix(line, "# channel "))
 		case strings.HasPrefix(line, "# relayer account"):
-			fmt.Println("relayer account")
+			fmt.Fprintln(w, "relayer account")
 		case strings.HasPrefix(line, "#"):
 			// other comment / HELP / TYPE lines: skip
 		case strings.HasPrefix(line, "mst_outbox_entries"):
-			fmt.Printf("  %s\n", line)
+			fmt.Fprintf(w, "  %s\n", line)
 		case strings.HasPrefix(line, "mst_outbox_oldest_active_age_seconds"):
-			fmt.Printf("  %s\n", line)
+			fmt.Fprintf(w, "  %s\n", line)
 		case strings.HasPrefix(line, "mst_relayer_balance_gwei"):
-			fmt.Printf("  %s\n", line)
+			fmt.Fprintf(w, "  %s\n", line)
 		}
 	}
 }

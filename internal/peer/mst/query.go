@@ -37,18 +37,19 @@ func statusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			out := cmd.OutOrStdout()
 			if jsonOutput {
-				fmt.Println(string(payload))
+				fmt.Fprintln(out, string(payload))
 				return nil
 			}
 			var rec mstscc.AnchorStatus
 			if err := json.Unmarshal(payload, &rec); err != nil {
 				return fmt.Errorf("decode record: %w", err)
 			}
-			fmt.Printf("fabric tx id : %s\n", rec.FabricTxID)
-			fmt.Printf("anchor ref   : %s\n", rec.AnchorRef)
-			fmt.Printf("status       : %s\n", rec.Status)
-			fmt.Printf("recorded at  : %s (%d)\n", time.Unix(rec.RecordedAt, 0).UTC().Format(time.RFC3339), rec.RecordedAt)
+			fmt.Fprintf(out, "fabric tx id : %s\n", rec.FabricTxID)
+			fmt.Fprintf(out, "anchor ref   : %s\n", rec.AnchorRef)
+			fmt.Fprintf(out, "status       : %s\n", rec.Status)
+			fmt.Fprintf(out, "recorded at  : %s (%d)\n", time.Unix(rec.RecordedAt, 0).UTC().Format(time.RFC3339), rec.RecordedAt)
 			return nil
 		},
 	}
@@ -78,7 +79,7 @@ func isAnchoredCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Println(string(payload))
+			fmt.Fprintln(cmd.OutOrStdout(), string(payload))
 			return nil
 		},
 	}
@@ -108,8 +109,9 @@ func listCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			out := cmd.OutOrStdout()
 			if jsonOutput {
-				fmt.Println(string(payload))
+				fmt.Fprintln(out, string(payload))
 				return nil
 			}
 			var recs []mstscc.AnchorStatus
@@ -117,11 +119,11 @@ func listCmd() *cobra.Command {
 				return fmt.Errorf("decode records: %w", err)
 			}
 			if len(recs) == 0 {
-				fmt.Println("no anchored transactions on this channel")
+				fmt.Fprintln(out, "no anchored transactions on this channel")
 				return nil
 			}
 			for _, r := range recs {
-				fmt.Printf("%s  %s  %s  %s\n", r.FabricTxID, r.Status, r.AnchorRef,
+				fmt.Fprintf(out, "%s  %s  %s  %s\n", r.FabricTxID, r.Status, r.AnchorRef,
 					time.Unix(r.RecordedAt, 0).UTC().Format(time.RFC3339))
 			}
 			return nil
@@ -149,7 +151,7 @@ func countCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Println(string(payload))
+			fmt.Fprintln(cmd.OutOrStdout(), string(payload))
 			return nil
 		},
 	}

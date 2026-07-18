@@ -11,8 +11,10 @@ package evm_test
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	ethereum "github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -30,10 +33,28 @@ import (
 	"github.com/hansrajrami/fabric/mst/relay/sender"
 )
 
-// Hardhat/anvil dev account #0.
-const devKey = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+// Hardhat/anvil dev accounts #0 (deployer/owner) and #1 (a second funded key).
+const (
+	devKey  = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+	devKey1 = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+)
 
-func deployAnchor(t *testing.T, rpcURL string) string {
+// encodeConstructor ABI-encodes MSTAnchor's constructor(bool allowlistEnabled,
+// address[] initialRelayers) tail.
+func encodeConstructor(allowlistEnabled bool, relayers []common.Address) []byte {
+	out := make([]byte, 3*32+len(relayers)*32)
+	if allowlistEnabled {
+		out[31] = 1
+	}
+	out[63] = 0x40 // offset of the address[] (word 1 -> word 2)
+	binary.BigEndian.PutUint64(out[88:96], uint64(len(relayers)))
+	for i, r := range relayers {
+		copy(out[96+i*32+12:96+i*32+32], r[:])
+	}
+	return out
+}
+
+func deployAnchor(t *testing.T, rpcURL string, allowlistEnabled bool, relayers []common.Address) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.FromSlash("../../anchor-contracts/abi/MSTAnchor.json"))
 	if err != nil {
@@ -49,10 +70,7 @@ func deployAnchor(t *testing.T, rpcURL string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Constructor args: (bool allowlistEnabled=false, address[] relayers=[]).
-	ctorArgs := make([]byte, 3*32)
-	ctorArgs[63] = 0x40 // offset of the empty array
-	deployData := append(bytecode, ctorArgs...)
+	deployData := append(bytecode, encodeConstructor(allowlistEnabled, relayers)...)
 
 	eth, err := ethclient.Dial(rpcURL)
 	if err != nil {
@@ -111,13 +129,93 @@ func deployAnchor(t *testing.T, rpcURL string) string {
 	}
 }
 
+// TestIntegrationRelayerAllowlist exercises the owner-only setRelayer path on an
+// allowlist-enabled contract: a non-allowlisted account's anchor reverts, the
+// owner adds it, its anchor then succeeds, and after removal it reverts again.
+// Membership is verified behaviorally (anchor succeeds vs ErrReverted) since the
+// Go client has no isRelayer getter.
+func TestIntegrationRelayerAllowlist(t *testing.T) {
+	rpcURL := os.Getenv("MST_EVM_RPC")
+	if rpcURL == "" {
+		t.Skip("MST_EVM_RPC not set; skipping EVM integration test")
+	}
+	ctx := context.Background()
+
+	// Allowlist enabled, no initial relayers (owner = deployer = dev #0).
+	contractAddr := deployAnchor(t, rpcURL, true, nil)
+	t.Logf("allowlisted MSTAnchor deployed at %s", contractAddr)
+
+	owner, err := evm.Dial(ctx, evm.Config{RPCURL: rpcURL, ContractAddress: contractAddr, PrivateKeyHex: devKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+
+	guest, err := evm.Dial(ctx, evm.Config{RPCURL: rpcURL, ContractAddress: contractAddr, PrivateKeyHex: devKey1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guest.Close()
+
+	var txID, txID2, commitment [32]byte
+	copy(txID[:], []byte("allowlist-tx-000000000000000001"))
+	copy(txID2[:], []byte("allowlist-tx-000000000000000002"))
+	copy(commitment[:], []byte("allowlist-commitment-0000000001"))
+
+	anchor := func(c *evm.Client, id [32]byte) error {
+		hash, err := c.SubmitAnchor(ctx, id, commitment, 1)
+		if err != nil {
+			return err
+		}
+		return c.WaitConfirmed(ctx, hash, 1)
+	}
+
+	// 1. Non-allowlisted guest → NotRelayer revert.
+	if err := anchor(guest, txID); !errors.Is(err, evm.ErrReverted) {
+		t.Fatalf("expected ErrReverted for non-allowlisted anchor, got %v", err)
+	}
+
+	// 2. Owner allowlists the guest.
+	setHash, err := owner.SetRelayer(ctx, guest.Sender(), true)
+	if err != nil {
+		t.Fatalf("setRelayer add: %v", err)
+	}
+	if err := owner.WaitConfirmed(ctx, setHash, 1); err != nil {
+		t.Fatalf("setRelayer add not confirmed: %v", err)
+	}
+
+	// 3. Guest anchor now succeeds and is recorded.
+	if err := anchor(guest, txID); err != nil {
+		t.Fatalf("allowlisted anchor should succeed, got %v", err)
+	}
+	rec, err := guest.GetAnchor(ctx, txID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec == nil || rec.Commitment != commitment {
+		t.Fatalf("anchor not recorded/commitment mismatch: %+v", rec)
+	}
+
+	// 4. Owner removes the guest → a fresh anchor reverts again.
+	rmHash, err := owner.SetRelayer(ctx, guest.Sender(), false)
+	if err != nil {
+		t.Fatalf("setRelayer remove: %v", err)
+	}
+	if err := owner.WaitConfirmed(ctx, rmHash, 1); err != nil {
+		t.Fatalf("setRelayer remove not confirmed: %v", err)
+	}
+	if err := anchor(guest, txID2); !errors.Is(err, evm.ErrReverted) {
+		t.Fatalf("expected ErrReverted after removal, got %v", err)
+	}
+}
+
 func TestIntegrationClientAndSender(t *testing.T) {
 	rpcURL := os.Getenv("MST_EVM_RPC")
 	if rpcURL == "" {
 		t.Skip("MST_EVM_RPC not set; skipping EVM integration test")
 	}
 	ctx := context.Background()
-	contractAddr := deployAnchor(t, rpcURL)
+	contractAddr := deployAnchor(t, rpcURL, false, nil)
 	t.Logf("MSTAnchor deployed at %s", contractAddr)
 
 	client, err := evm.Dial(ctx, evm.Config{
