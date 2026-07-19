@@ -46,6 +46,7 @@ func Cmd(cryptoProvider bccsp.BCCSP) *cobra.Command {
 	mstCmd.AddCommand(countCmd())
 	mstCmd.AddCommand(channelConfigCmd(cryptoProvider))
 	mstCmd.AddCommand(onchainCmd(cryptoProvider))
+	mstCmd.AddCommand(preflightCmd(cryptoProvider))
 	mstCmd.AddCommand(verifyCmd(cryptoProvider))
 	mstCmd.AddCommand(pipelineCmd())
 	mstCmd.AddCommand(relayerCmd(cryptoProvider))
@@ -54,8 +55,8 @@ func Cmd(cryptoProvider bccsp.BCCSP) *cobra.Command {
 
 var mstCmd = &cobra.Command{
 	Use:   "mst",
-	Short: "Interact with MST anchoring: status|is-anchored|list|count|channel-config|verify|onchain|pipeline|relayer",
-	Long:  "Query the MST anchor-status system chaincode, inspect a channel's MST configuration, verify anchors, check the local relayer, and manage the per-channel contract's relayer allowlist.",
+	Short: "Interact with MST anchoring: status|is-anchored|list|count|channel-config|verify|onchain|preflight|pipeline|relayer",
+	Long:  "Query the MST anchor-status system chaincode, inspect a channel's MST configuration, verify anchors, preflight a channel's config against the live chain, check the local relayer, and manage the per-channel contract's relayer allowlist.",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		common.InitCmd(cmd, args)
 	},

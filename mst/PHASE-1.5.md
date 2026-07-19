@@ -202,8 +202,16 @@ operational knobs (RPC URL/credentials, workers, cadence, outbox path, and the
   For **mixed networks**, scope the write-back's endorsement to the MST-running
   org(s) so vanilla peers in other orgs never need to execute `mstscc`; the
   MST-enabled binary is a version floor only for participating orgs.
-- **Config-update validation is minimal.** The value's address format is checked;
-  nothing verifies the contract is deployed or that all peers are patched.
+- **Config-update validation is structural + preflight, not enforced on-chain.**
+  `channelconfig` now rejects, at config-apply time, a malformed *or zero*
+  contract address and an inconsistent cadence (e.g. `interval` mode with no
+  interval) — but it cannot make network calls, so it still cannot confirm the
+  contract is actually deployed, that `ChainID` matches the live chain, or that
+  all peers are patched. `peer mst preflight` covers those live checks as an
+  operator step run *before* applying the update (contract-deployed + ABI-compatible
+  via `getAnchor`, chain-id match); it is advisory, not a consensus gate, so a
+  determined operator can still commit a config that points at an undeployed
+  contract.
 - **Phase 1 coexistence / migration is out of scope.** New channels use Phase
   1.5; existing channels stay on Phase 1 until explicitly migrated.
 - **Contract rotation splits history.** A channel's contract is effectively

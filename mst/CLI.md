@@ -73,6 +73,32 @@ peer mst onchain <txid> -C mychannel
 
 Bypasses Fabric and calls `getAnchor` on the channel's contract.
 
+## Preflight a channel's MST config against the live chain
+
+```bash
+peer mst preflight -C mychannel --rpc http://mst-node:8545
+#   channel: mychannel
+#   [PASS] enabled       MST anchoring is enabled
+#   [PASS] rpc endpoint   connected; node reports chain id 1337
+#   [PASS] chain id       config chainID 1337 matches the node
+#   [PASS] contract       0x… responds as an MSTAnchor contract
+#
+#   preflight: OK
+```
+
+Run this **before** applying an `MSTAnchor` config update. It reads the channel's
+current MST config and checks it against the live chain: the node is reachable,
+its chain id matches the configured `ChainID` (a `ChainID` of 0 is reported as a
+WARN — unpinned, not a failure), and the configured contract address actually
+hosts a compatible MSTAnchor contract (probed via `getAnchor`, so it catches both
+an undeployed address and a wrong/incompatible ABI). Exits non-zero if any check
+FAILs, so it fits a CI/pre-apply gate. `--json` emits the structured result. On a
+disabled channel it reports "nothing to preflight" and exits 0.
+
+This complements the always-on structural validation in `channelconfig`
+(`common/channelconfig/mstanchor.go`), which rejects a zero contract address and
+inconsistent cadence at config-apply time but cannot make network calls.
+
 ## Check the local relayer
 
 ```bash
@@ -105,8 +131,9 @@ allowlist enabled. See [`PHASE-1.5.md`](PHASE-1.5.md) for the allowlist model.
 
 - `status`/`is-anchored`/`list`/`count`/`channel-config` need only a running,
   reachable peer — no MST RPC access.
-- `verify`/`onchain`/`relayer` additionally reach the MST chain (`--rpc` or
-  `mst.evm.rpcURL`); reads use a throwaway key, only `relayer` signs (owner key).
+- `verify`/`onchain`/`preflight`/`relayer` additionally reach the MST chain
+  (`--rpc` or `mst.evm.rpcURL`); reads use a throwaway key, only `relayer` signs
+  (owner key).
 - These are convenience wrappers; the underlying calls remain available via
   `peer chaincode query -n mstscc` and the standalone `mst-verify` tool.
 
@@ -117,7 +144,7 @@ full live network, so the layers below together cover every component:
 
 | Layer | Where | Covers |
 |---|---|---|
-| Channel-config value | `common/channelconfig/mstanchor_test.go` | parse/validate/round-trip of the `MSTAnchor` config value |
+| Channel-config value | `common/channelconfig/mstanchor_test.go` | parse/validate/round-trip of the `MSTAnchor` config value, incl. zero-address and cadence-consistency rejection |
 | System chaincode | `core/scc/mstscc/mstscc_test.go` | record/query/idempotency, list/count, channel-enablement gating |
 | Simulated pipeline e2e | `internal/pkg/mstanchor/e2e_test.go` | real capture → outbox → sender → `mstscc` write-back with in-memory MST + channel-config gating + per-channel isolation |
 | EVM contract (Go) | `mst/relay/evm/integration_test.go` | real chain: anchor/get/root/sender pipeline **and the relayer allowlist `setRelayer` path** (env-gated on `MST_EVM_RPC`; runs in CI's hardhat job) |

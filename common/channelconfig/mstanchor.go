@@ -172,11 +172,43 @@ func (c *MSTAnchorConfig) validate() error {
 	if err := validateOptionalDuration("cadenceMaxWait", c.CadenceMaxWait); err != nil {
 		return err
 	}
+	if err := c.validateCadenceConsistency(); err != nil {
+		return err
+	}
 	if !c.Enabled {
 		return nil
 	}
 	if err := validateEVMAddress(c.ContractAddress); err != nil {
 		return errors.Wrap(err, "MSTAnchor is enabled but contractAddress is invalid")
+	}
+	if isZeroEVMAddress(c.ContractAddress) {
+		return errors.New("MSTAnchor is enabled but contractAddress is the zero address")
+	}
+	return nil
+}
+
+// validateCadenceConsistency rejects a cadence mode whose required companion
+// field is missing, so a mode that could never flush deterministically (e.g.
+// "interval" with no interval) is caught at config-apply time rather than
+// silently defaulting at pipeline start. The enum and duration formats are
+// already checked in validate; this covers the cross-field requirements.
+func (c *MSTAnchorConfig) validateCadenceConsistency() error {
+	if c.CadenceN < 0 {
+		return errors.Errorf("MSTAnchor cadenceN must not be negative, got %d", c.CadenceN)
+	}
+	switch c.CadenceMode {
+	case "batch":
+		if c.CadenceN <= 0 {
+			return errors.New("MSTAnchor cadenceMode \"batch\" requires a positive cadenceN")
+		}
+	case "interval":
+		if c.CadenceInterval == "" {
+			return errors.New("MSTAnchor cadenceMode \"interval\" requires cadenceInterval")
+		}
+	case "cron":
+		if c.CadenceCron == "" {
+			return errors.New("MSTAnchor cadenceMode \"cron\" requires cadenceCron")
+		}
 	}
 	return nil
 }
@@ -193,9 +225,18 @@ func validateOptionalDuration(field, value string) error {
 	return nil
 }
 
+// isZeroEVMAddress reports whether addr is the all-zero 20-byte address
+// (0x0000…0000), which is well-formed but never a real deployment. Assumes addr
+// already passed validateEVMAddress. The comparison is case-insensitive on the
+// hex body (all zeros, so case is moot) and tolerant of an absent 0x only in
+// theory — callers validate the format first.
+func isZeroEVMAddress(addr string) bool {
+	return strings.EqualFold(addr, "0x0000000000000000000000000000000000000000")
+}
+
 // validateEVMAddress checks a 0x-prefixed 20-byte hex address. It does not
 // (and cannot, from inside Fabric) verify that the contract is actually
-// deployed — that remains an operational precondition.
+// deployed — that remains an operational precondition (see `peer mst preflight`).
 func validateEVMAddress(addr string) error {
 	if !strings.HasPrefix(addr, "0x") {
 		return errors.New("contract address must be 0x-prefixed")
