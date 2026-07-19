@@ -108,6 +108,19 @@ func TestApplicationV25(t *testing.T) {
 	require.True(t, ap.PurgePvtData())
 }
 
+func TestApplicationMSTAnchor(t *testing.T) {
+	// Absent by default, even with the version ladder enabled: it is an
+	// explicit opt-in, not implied by V2_5.
+	ap := NewApplicationProvider(map[string]*cb.Capability{ApplicationV2_5: {}})
+	require.NoError(t, ap.Supported())
+	require.False(t, ap.MSTAnchor())
+
+	// Present when explicitly enabled, and Supported by this binary.
+	ap = NewApplicationProvider(map[string]*cb.Capability{ApplicationMSTAnchor: {}})
+	require.NoError(t, ap.Supported())
+	require.True(t, ap.MSTAnchor())
+}
+
 func TestApplicationPvtDataExperimental(t *testing.T) {
 	ap := NewApplicationProvider(map[string]*cb.Capability{
 		ApplicationPvtDataExperimental: {},
@@ -122,6 +135,7 @@ func TestHasCapability(t *testing.T) {
 	require.True(t, ap.HasCapability(ApplicationV1_3))
 	require.True(t, ap.HasCapability(ApplicationV2_0))
 	require.True(t, ap.HasCapability(ApplicationV2_5))
+	require.True(t, ap.HasCapability(ApplicationMSTAnchor))
 	require.True(t, ap.HasCapability(ApplicationPvtDataExperimental))
 	require.True(t, ap.HasCapability(ApplicationResourcesTreeExperimental))
 	require.False(t, ap.HasCapability("default"))

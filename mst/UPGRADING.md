@@ -25,7 +25,8 @@ thin as possible (a self-contained file plus a few registration lines):
 
 | File | Nature of change | Merge risk |
 |---|---|---|
-| `common/channelconfig/application.go`, `api.go` | one `ApplicationProtos` field (`MSTAnchor *structpb.Value`), one parse line, one accessor added to the `Application` interface | Moderate — re-apply if upstream reworks `ApplicationConfig`. Also requires the 3 `channelconfig.Application` counterfeiter mocks to carry `MSTAnchorConfig` (regenerate with `go generate`, or hand-add) |
+| `common/channelconfig/application.go`, `api.go` | one `ApplicationProtos` field (`MSTAnchor *structpb.Value`), a capability-gated parse block, one accessor added to the `Application` interface | Moderate — re-apply if upstream reworks `ApplicationConfig`. Also requires the 3 `channelconfig.Application` counterfeiter mocks to carry `MSTAnchorConfig` (regenerate with `go generate`, or hand-add) |
+| `common/capabilities/application.go`, `common/channelconfig/api.go` | one `V2_5_MSTANCHOR` capability const + provider field/method, one `MSTAnchor()` method on the `ApplicationCapabilities` interface | Moderate — additive, but adding an interface method requires the 5 `ApplicationCapabilities` mocks (`core/chaincode`, `core/chaincode/lifecycle`, `core/scc/lscc`, `core/committer/txvalidator`, `gossip/privdata`) to carry `MSTAnchor` (regenerate with `go generate`, or hand-add) |
 | `common/channelconfig/mstanchor.go` | **new file** (config type + validation + `MSTAnchorValue` helper) | None (additive) |
 | `internal/peer/node/start.go` | `mstscc` added to `builtinSCCs`, constructed next to `qscc`, appended to the deploy loop | Low — 3 small lines near the existing SCC wiring |
 | `core/scc/mstscc/**` | **new package** (the system chaincode) | None (additive) |

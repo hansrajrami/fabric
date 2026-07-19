@@ -128,6 +128,13 @@ Capabilities:
         # Prior to enabling V2.5 application capabilities, ensure that all
         # peers on a channel are at v2.5.0 or later.
         V2_5: true
+        # V2_5_MSTANCHOR gates MST proof-anchoring (the MSTAnchor config value
+        # below and the mstscc write-back). It is an explicit opt-in, separate
+        # from the version ladder: enable it ONLY when every peer on the channel
+        # runs an MST-enabled binary. A vanilla binary does not support this
+        # capability and will refuse to join the channel rather than choke on
+        # the unknown MSTAnchor value. Required whenever MSTAnchor is set.
+        # V2_5_MSTANCHOR: true
 
 ################################################################################
 #
@@ -258,6 +265,11 @@ Application: &ApplicationDefaults
     # Every endorsing peer on the channel must run an MST-enabled peer binary
     # (with mstscc in chaincode.system) for anchoring to work. Left unset, the
     # channel does not anchor to MST and behaves like a normal channel.
+    #
+    # Setting MSTAnchor REQUIRES the V2_5_MSTANCHOR application capability (see
+    # the Capabilities section above); the config is rejected without it. That
+    # capability is what makes "all peers run the MST binary" an explicit,
+    # safe upgrade gate rather than a silent endorsement failure.
     #
     # Besides Enabled/ContractAddress/ChainID, the anchoring POLICY lives here
     # too (not in each peer's core.yaml) so every peer on the channel anchors

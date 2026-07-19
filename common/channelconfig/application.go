@@ -57,19 +57,30 @@ func NewApplicationConfig(appGroup *cb.ConfigGroup, mspConfig *MSPConfigHandler)
 		}
 	}
 
-	// MST anchoring config is optional; a nil/absent value simply means the
-	// channel does not anchor to MST.
-	mstAnchor, err := unmarshalMSTAnchorConfig([]byte(ac.protos.MSTAnchor.GetStringValue()))
-	if err != nil {
-		return nil, err
-	}
-	ac.mstAnchor = mstAnchor
-
-	for orgName, orgGroup := range appGroup.Groups {
-		ac.applicationOrgs[orgName], err = NewApplicationOrgConfig(orgName, orgGroup, mspConfig)
+	// MST anchoring config is optional AND capability-gated: the MSTAnchor value
+	// may appear only when the channel enables the MSTAnchor application
+	// capability, which every participating node must support. This makes the
+	// "all nodes run the MST-enabled binary" prerequisite an explicit capability
+	// gate — a vanilla binary refuses the channel via Capabilities().Supported()
+	// rather than silently failing to endorse the write-back. A present value
+	// without the capability is a misconfiguration and is rejected here.
+	if raw := ac.protos.MSTAnchor.GetStringValue(); raw != "" {
+		if !ac.Capabilities().MSTAnchor() {
+			return nil, errors.Errorf("the %s config value may not be specified without the %s application capability", MSTAnchorKey, capabilities.ApplicationMSTAnchor)
+		}
+		mstAnchor, err := unmarshalMSTAnchorConfig([]byte(raw))
 		if err != nil {
 			return nil, err
 		}
+		ac.mstAnchor = mstAnchor
+	}
+
+	for orgName, orgGroup := range appGroup.Groups {
+		orgConfig, err := NewApplicationOrgConfig(orgName, orgGroup, mspConfig)
+		if err != nil {
+			return nil, err
+		}
+		ac.applicationOrgs[orgName] = orgConfig
 	}
 
 	return ac, nil

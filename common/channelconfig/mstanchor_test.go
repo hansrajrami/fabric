@@ -10,6 +10,7 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	cb "github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -35,9 +36,22 @@ func stringValueBytes(t *testing.T, s string) []byte {
 	return raw
 }
 
+// newAppConfigWithMST builds an application config carrying the MST value with
+// the MSTAnchor application capability enabled (the normal, supported case).
 func newAppConfigWithMST(t *testing.T, mstVal []byte) (*ApplicationConfig, error) {
 	t.Helper()
-	capBytes, err := proto.Marshal(&cb.Capabilities{})
+	return newAppConfigWithMSTCap(t, mstVal, true)
+}
+
+// newAppConfigWithMSTCap lets a test toggle whether the MSTAnchor capability is
+// present, to exercise the capability gate.
+func newAppConfigWithMSTCap(t *testing.T, mstVal []byte, withCapability bool) (*ApplicationConfig, error) {
+	t.Helper()
+	caps := &cb.Capabilities{Capabilities: map[string]*cb.Capability{}}
+	if withCapability {
+		caps.Capabilities[capabilities.ApplicationMSTAnchor] = &cb.Capability{}
+	}
+	capBytes, err := proto.Marshal(caps)
 	require.NoError(t, err)
 	group := &cb.ConfigGroup{
 		Values: map[string]*cb.ConfigValue{
@@ -129,4 +143,27 @@ func TestNewApplicationConfigRejectsBadMSTValue(t *testing.T) {
 	// the misconfiguration surfaces when the config is applied.
 	_, err := newAppConfigWithMST(t, stringValueBytes(t, `{"enabled":true,"contractAddress":"0xbad"}`))
 	require.Error(t, err)
+}
+
+func TestMSTAnchorConfigRequiresCapability(t *testing.T) {
+	// A present MSTAnchor value without the V2_5_MSTANCHOR capability is a
+	// misconfiguration: it is rejected so a vanilla-capability channel never
+	// carries a value its binaries cannot honor.
+	_, err := newAppConfigWithMSTCap(t, mstValueBytes(t, &MSTAnchorConfig{Enabled: false}), false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), capabilities.ApplicationMSTAnchor)
+
+	// With the capability present, the same value parses fine.
+	ac, err := newAppConfigWithMSTCap(t, mstValueBytes(t, &MSTAnchorConfig{Enabled: false}), true)
+	require.NoError(t, err)
+	_, ok := ac.MSTAnchorConfig()
+	require.True(t, ok)
+}
+
+func TestMSTAnchorConfigAbsentNeedsNoCapability(t *testing.T) {
+	// No MST value + no capability is the vanilla channel: it must parse cleanly.
+	ac, err := newAppConfigWithMSTCap(t, nil, false)
+	require.NoError(t, err)
+	_, ok := ac.MSTAnchorConfig()
+	require.False(t, ok)
 }

@@ -59,10 +59,18 @@ An **enabled** value with a malformed contract address is rejected when the
 config is parsed, so misconfiguration surfaces at config-apply time, not at the
 first failed anchor.
 
-Operators declare it in `configtx.yaml` under the `Application` profile:
+Operators declare it in `configtx.yaml` under the `Application` profile, together
+with the **`V2_5_MSTANCHOR` application capability** that gates it:
 
 ```yaml
+Capabilities:
+    Application: &ApplicationCapabilities
+        V2_5: true
+        V2_5_MSTANCHOR: true         # required for the MSTAnchor value below
+
 Application:
+    Capabilities:
+        <<: *ApplicationCapabilities
     MSTAnchor:
         Enabled: true
         ContractAddress: "0xYourPerChannelContract…"
@@ -74,8 +82,19 @@ Application:
         Confirmations: 1
 ```
 
-`configtxgen` encodes it (`internal/configtxgen/encoder`); turning it on or off
-later is an ordinary channel config update, subject to the Application group's
+**Capability gate.** The `MSTAnchor` value may appear only when the channel
+enables the `V2_5_MSTANCHOR` application capability
+(`common/capabilities/application.go`); `channelconfig` rejects the value
+otherwise, and `configtxgen` rejects it at genesis-generation time. This is the
+Fabric-native way to express "every node must run the MST-enabled binary": a
+vanilla binary does not report the capability, so `Capabilities().Supported()`
+makes it **cleanly refuse to join the channel** rather than silently choke on the
+unknown `MSTAnchor` value or fail to endorse the write-back. The capability is an
+explicit opt-in, deliberately *not* implied by `V2_5`, so an operator turns it on
+only once the whole channel is patched.
+
+`configtxgen` encodes the value (`internal/configtxgen/encoder`); turning it on or
+off later is an ordinary channel config update, subject to the Application group's
 modification policy (all-org agreement).
 
 **The anchoring *policy* is channel-governed, not per-peer.** Because every peer
@@ -173,10 +192,16 @@ operational knobs (RPC URL/credentials, workers, cadence, outbox path, and the
 
 ## What is intentionally NOT solved (gaps)
 
-- **"Deployed" is really built-in + gated.** A built-in SCC is always linked; it
-  is not per-channel deployed. Every endorsing peer on an enabled channel must
-  run the MST-enabled binary, or the write-back cannot be endorsed. This is a
-  hard deployment prerequisite.
+- **"Deployed" is really built-in + gated (now an explicit capability gate).** A
+  built-in SCC is always linked; it is not per-channel deployed. Every endorsing
+  peer on an enabled channel must run the MST-enabled binary, or the write-back
+  cannot be endorsed — an irreducible prerequisite of a built-in SCC. The
+  `V2_5_MSTANCHOR` capability turns this from a *silent* failure (a vanilla peer
+  choking on the config or failing to endorse) into an *explicit, safe* one: a
+  vanilla peer refuses the channel until upgraded (`Capabilities().Supported()`).
+  For **mixed networks**, scope the write-back's endorsement to the MST-running
+  org(s) so vanilla peers in other orgs never need to execute `mstscc`; the
+  MST-enabled binary is a version floor only for participating orgs.
 - **Config-update validation is minimal.** The value's address format is checked;
   nothing verifies the contract is deployed or that all peers are patched.
 - **Phase 1 coexistence / migration is out of scope.** New channels use Phase
@@ -212,6 +237,7 @@ operational knobs (RPC URL/credentials, workers, cadence, outbox path, and the
 
 | Area | Files |
 |---|---|
+| Capability gate | `common/capabilities/application.go` (`V2_5_MSTANCHOR`), `common/channelconfig/api.go` (`MSTAnchor()`) |
 | Channel-config value | `common/channelconfig/mstanchor.go`, `application.go`, `api.go` |
 | System chaincode | `core/scc/mstscc/mstscc.go`; registered in `internal/peer/node/start.go` |
 | Write-back → SCC | `internal/peer/node/mst.go`, `internal/pkg/mstanchor/writeback.go` |

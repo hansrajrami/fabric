@@ -86,6 +86,16 @@ type ApplicationCapabilities struct {
 	purgePvtDataReturnsOnCall map[int]struct {
 		result1 bool
 	}
+	MSTAnchorStub        func() bool
+	mSTAnchorMutex       sync.RWMutex
+	mSTAnchorArgsForCall []struct {
+	}
+	mSTAnchorReturns struct {
+		result1 bool
+	}
+	mSTAnchorReturnsOnCall map[int]struct {
+		result1 bool
+	}
 	StorePvtDataOfInvalidTxStub        func() bool
 	storePvtDataOfInvalidTxMutex       sync.RWMutex
 	storePvtDataOfInvalidTxArgsForCall []struct {
@@ -574,6 +584,59 @@ func (fake *ApplicationCapabilities) PurgePvtDataReturnsOnCall(i int, result1 bo
 	}{result1}
 }
 
+func (fake *ApplicationCapabilities) MSTAnchor() bool {
+	fake.mSTAnchorMutex.Lock()
+	ret, specificReturn := fake.mSTAnchorReturnsOnCall[len(fake.mSTAnchorArgsForCall)]
+	fake.mSTAnchorArgsForCall = append(fake.mSTAnchorArgsForCall, struct {
+	}{})
+	stub := fake.MSTAnchorStub
+	fakeReturns := fake.mSTAnchorReturns
+	fake.recordInvocation("MSTAnchor", []interface{}{})
+	fake.mSTAnchorMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *ApplicationCapabilities) MSTAnchorCallCount() int {
+	fake.mSTAnchorMutex.RLock()
+	defer fake.mSTAnchorMutex.RUnlock()
+	return len(fake.mSTAnchorArgsForCall)
+}
+
+func (fake *ApplicationCapabilities) MSTAnchorCalls(stub func() bool) {
+	fake.mSTAnchorMutex.Lock()
+	defer fake.mSTAnchorMutex.Unlock()
+	fake.MSTAnchorStub = stub
+}
+
+func (fake *ApplicationCapabilities) MSTAnchorReturns(result1 bool) {
+	fake.mSTAnchorMutex.Lock()
+	defer fake.mSTAnchorMutex.Unlock()
+	fake.MSTAnchorStub = nil
+	fake.mSTAnchorReturns = struct {
+		result1 bool
+	}{result1}
+}
+
+func (fake *ApplicationCapabilities) MSTAnchorReturnsOnCall(i int, result1 bool) {
+	fake.mSTAnchorMutex.Lock()
+	defer fake.mSTAnchorMutex.Unlock()
+	fake.MSTAnchorStub = nil
+	if fake.mSTAnchorReturnsOnCall == nil {
+		fake.mSTAnchorReturnsOnCall = make(map[int]struct {
+			result1 bool
+		})
+	}
+	fake.mSTAnchorReturnsOnCall[i] = struct {
+		result1 bool
+	}{result1}
+}
+
 func (fake *ApplicationCapabilities) StorePvtDataOfInvalidTx() bool {
 	fake.storePvtDataOfInvalidTxMutex.Lock()
 	ret, specificReturn := fake.storePvtDataOfInvalidTxReturnsOnCall[len(fake.storePvtDataOfInvalidTxArgsForCall)]
@@ -909,8 +972,8 @@ func (fake *ApplicationCapabilities) Invocations() map[string][][]interface{} {
 	defer fake.metadataLifecycleMutex.RUnlock()
 	fake.privateChannelDataMutex.RLock()
 	defer fake.privateChannelDataMutex.RUnlock()
-	fake.purgePvtDataMutex.RLock()
-	defer fake.purgePvtDataMutex.RUnlock()
+	fake.mSTAnchorMutex.RLock()
+	defer fake.mSTAnchorMutex.RUnlock()
 	fake.storePvtDataOfInvalidTxMutex.RLock()
 	defer fake.storePvtDataOfInvalidTxMutex.RUnlock()
 	fake.supportedMutex.RLock()

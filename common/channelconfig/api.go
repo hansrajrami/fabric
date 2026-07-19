@@ -202,6 +202,12 @@ type ApplicationCapabilities interface {
 	// PurgePvtData returns true if this channel supports purging of private
 	// data entries
 	PurgePvtData() bool
+
+	// MSTAnchor returns true if this channel has MST proof-anchoring enabled.
+	// It gates the channel-config MSTAnchor value and the mstscc write-back, so
+	// the feature turns on only when every participating node runs the
+	// MST-enabled binary (a vanilla binary refuses the channel via Supported).
+	MSTAnchor() bool
 }
 
 // OrdererCapabilities defines the capabilities for the orderer portion of a channel

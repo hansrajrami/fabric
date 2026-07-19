@@ -31,6 +31,15 @@ const (
 	// ApplicationV2_5 is the capabilities string for standard new non-backwards compatible fabric v2.5 application capabilities.
 	ApplicationV2_5 = "V2_5"
 
+	// ApplicationMSTAnchor is the capabilities string gating MST proof-anchoring:
+	// the channel-config MSTAnchor value and the mstscc write-back. It requires
+	// every node on the channel to run the MST-enabled binary. A vanilla binary
+	// does not report this capability, so it cleanly refuses to join a channel
+	// that enables it (registry.Supported) instead of choking on the unknown
+	// MSTAnchor config value — turning "all peers must be patched" into an
+	// explicit, safe upgrade gate.
+	ApplicationMSTAnchor = "V2_5_MSTANCHOR"
+
 	// ApplicationPvtDataExperimental is the capabilities string for private data using the experimental feature of collections/sideDB.
 	ApplicationPvtDataExperimental = "V1_1_PVTDATA_EXPERIMENTAL"
 
@@ -47,6 +56,7 @@ type ApplicationProvider struct {
 	v142                   bool
 	v20                    bool
 	v25                    bool
+	vMSTAnchor             bool
 	v11PvtDataExperimental bool
 }
 
@@ -60,6 +70,7 @@ func NewApplicationProvider(capabilities map[string]*cb.Capability) *Application
 	_, ap.v142 = capabilities[ApplicationV1_4_2]
 	_, ap.v20 = capabilities[ApplicationV2_0]
 	_, ap.v25 = capabilities[ApplicationV2_5]
+	_, ap.vMSTAnchor = capabilities[ApplicationMSTAnchor]
 	_, ap.v11PvtDataExperimental = capabilities[ApplicationPvtDataExperimental]
 	return ap
 }
@@ -149,6 +160,15 @@ func (ap *ApplicationProvider) PurgePvtData() bool {
 	return ap.v25
 }
 
+// MSTAnchor returns true if this channel has MST proof-anchoring enabled. It
+// gates parsing of the channel-config MSTAnchor value and the mstscc write-back,
+// and is independent of the version ladder (an explicit opt-in capability, like
+// the experimental features) so an operator turns anchoring on only when every
+// participating node runs the MST-enabled binary.
+func (ap *ApplicationProvider) MSTAnchor() bool {
+	return ap.vMSTAnchor
+}
+
 // HasCapability returns true if the capability is supported by this binary.
 func (ap *ApplicationProvider) HasCapability(capability string) bool {
 	switch capability {
@@ -164,6 +184,8 @@ func (ap *ApplicationProvider) HasCapability(capability string) bool {
 	case ApplicationV2_0:
 		return true
 	case ApplicationV2_5:
+		return true
+	case ApplicationMSTAnchor:
 		return true
 	case ApplicationPvtDataExperimental:
 		return true

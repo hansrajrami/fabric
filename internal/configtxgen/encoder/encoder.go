@@ -10,6 +10,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	cb "github.com/hyperledger/fabric-protos-go/common"
 	pb "github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/genesis"
@@ -293,6 +294,12 @@ func NewApplicationGroup(conf *genesisconfig.Application) (*cb.ConfigGroup, erro
 	}
 
 	if conf.MSTAnchor != nil {
+		// The MSTAnchor value requires the V2_5_MSTANCHOR application capability
+		// (channelconfig rejects it otherwise). Catch the misconfiguration here
+		// at genesis-generation time rather than when a peer processes the block.
+		if !conf.Capabilities[capabilities.ApplicationMSTAnchor] {
+			return nil, errors.Errorf("MSTAnchor is configured but the %s application capability is not enabled", capabilities.ApplicationMSTAnchor)
+		}
 		mstValue, err := channelconfig.MSTAnchorValue(&channelconfig.MSTAnchorConfig{
 			Enabled:           conf.MSTAnchor.Enabled,
 			ContractAddress:   conf.MSTAnchor.ContractAddress,

@@ -16,6 +16,7 @@ import (
 	cb "github.com/hyperledger/fabric-protos-go/common"
 	ab "github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
+	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/internal/configtxgen/encoder"
 	"github.com/hyperledger/fabric/internal/configtxgen/encoder/fakes"
@@ -506,6 +507,7 @@ var _ = Describe("Encoder", func() {
 
 		Context("when MSTAnchor is configured", func() {
 			BeforeEach(func() {
+				conf.Capabilities[capabilities.ApplicationMSTAnchor] = true
 				conf.MSTAnchor = &genesisconfig.MSTAnchor{
 					Enabled:         true,
 					ContractAddress: "0x1234567890abcdef1234567890abcdef12345678",
@@ -524,6 +526,17 @@ var _ = Describe("Encoder", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(cg.Values)).To(Equal(3))
 				Expect(cg.Values["MSTAnchor"]).NotTo(BeNil())
+			})
+
+			Context("but the MSTAnchor capability is not enabled", func() {
+				BeforeEach(func() {
+					delete(conf.Capabilities, capabilities.ApplicationMSTAnchor)
+				})
+
+				It("rejects the configuration", func() {
+					_, err := encoder.NewApplicationGroup(conf)
+					Expect(err).To(MatchError(ContainSubstring("V2_5_MSTANCHOR application capability is not enabled")))
+				})
 			})
 
 			Context("and an enum field is invalid", func() {

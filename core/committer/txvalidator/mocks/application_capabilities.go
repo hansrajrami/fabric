@@ -107,6 +107,20 @@ func (_m *ApplicationCapabilities) PrivateChannelData() bool {
 	return r0
 }
 
+// MSTAnchor provides a mock function with given fields:
+func (_m *ApplicationCapabilities) MSTAnchor() bool {
+	ret := _m.Called()
+
+	var r0 bool
+	if rf, ok := ret.Get(0).(func() bool); ok {
+		r0 = rf()
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+
+	return r0
+}
+
 // PurgePvtData provides a mock function with given fields:
 func (_m *ApplicationCapabilities) PurgePvtData() bool {
 	ret := _m.Called()
