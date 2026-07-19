@@ -82,6 +82,7 @@ peer mst preflight -C mychannel --rpc http://mst-node:8545
 #   [PASS] rpc endpoint   connected; node reports chain id 1337
 #   [PASS] chain id       config chainID 1337 matches the node
 #   [PASS] contract       0x… responds as an MSTAnchor contract
+#   [PASS] nodeous        all 2 application org(s) have NodeOUs peer classification
 #
 #   preflight: OK
 ```
@@ -89,11 +90,15 @@ peer mst preflight -C mychannel --rpc http://mst-node:8545
 Run this **before** applying an `MSTAnchor` config update. It reads the channel's
 current MST config and checks it against the live chain: the node is reachable,
 its chain id matches the configured `ChainID` (a `ChainID` of 0 is reported as a
-WARN — unpinned, not a failure), and the configured contract address actually
-hosts a compatible MSTAnchor contract (probed via `getAnchor`, so it catches both
-an undeployed address and a wrong/incompatible ABI). Exits non-zero if any check
-FAILs, so it fits a CI/pre-apply gate. `--json` emits the structured result. On a
-disabled channel it reports "nothing to preflight" and exits 0.
+WARN — unpinned, not a failure), the configured contract address actually hosts a
+compatible MSTAnchor contract (probed via `getAnchor`, so it catches both an
+undeployed address and a wrong/incompatible ABI), and the channel's MSPs have
+**NodeOUs** peer classification enabled (required for the write-back peer-role
+gate — see [`PHASE-1.5.md`](PHASE-1.5.md)). The NodeOUs check is a WARN if only
+some orgs lack it, a FAIL if none have it (write-back could never land). Exits
+non-zero if any check FAILs, so it fits a CI/pre-apply gate. `--json` emits the
+structured result. On a disabled channel it reports "nothing to preflight" and
+exits 0.
 
 This complements the always-on structural validation in `channelconfig`
 (`common/channelconfig/mstanchor.go`), which rejects a zero contract address and

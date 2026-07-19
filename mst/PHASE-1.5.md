@@ -146,7 +146,12 @@ relayer therefore signs the write-back with the peer's own node identity
 
 > **Precondition:** the channel's MSPs must have **NodeOUs enabled** so peer vs
 > client identities can be distinguished; otherwise the peer-role check fails
-> closed and no write-back is accepted.
+> closed and no write-back is accepted. This is now **detected**, not just
+> documented: `peer mst preflight` reports which application orgs lack NodeOUs
+> peer classification (WARN if some, FAIL if none), and the embedded service logs
+> a loud startup warning when the peer's write-back org lacks it
+> (`ApplicationOrgsMissingPeerNodeOUs` in `common/channelconfig/nodeous.go`), so
+> the silent-rejection trap surfaces before it puzzles an operator.
 
 **Trust model — attestation + pointer, verified off-ledger.** The stored record
 is an **attestation** by a peer-role identity plus a public **pointer**

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,11 +30,13 @@ var logger = flogging.MustGetLogger("mstanchor")
 const channelDiscoveryInterval = 10 * time.Second
 
 // PeerLedgers is the narrow slice of the peer the service needs: which
-// channels exist, their ledgers, and their parsed application config (for the
-// channel-level MST anchoring settings). *peer.Peer satisfies it.
+// channels exist, their ledgers, their parsed application config (for the
+// channel-level MST anchoring settings), and their full channel config (for the
+// MSPs' NodeOUs settings). *peer.Peer satisfies it.
 type PeerLedgers interface {
 	GetLedger(channelID string) ledger.PeerLedger
 	GetApplicationConfig(cid string) (channelconfig.Application, bool)
+	GetChannelConfig(cid string) channelconfig.Resources
 }
 
 // ChannelIDLister enumerates the peer's joined channel ids.
@@ -59,6 +62,10 @@ type Service struct {
 	// warned tracks channels for which a config/allowlist mismatch has already
 	// been logged, so the 10s discovery loop does not spam the log.
 	warned map[string]struct{}
+	// warnedNodeOUs is the same, kept separate so the NodeOUs advisory warning
+	// (which does not skip anchoring) neither swallows nor is swallowed by the
+	// allowlist/chainID warnings above.
+	warnedNodeOUs map[string]struct{}
 }
 
 type pipeline struct {
@@ -70,12 +77,13 @@ type pipeline struct {
 // until the anchor-status chaincode is configured; see NewLoopbackWriteBack).
 func New(cfg *Config, peer PeerLedgers, channels ChannelIDLister, writeback sender.WriteBack) *Service {
 	return &Service{
-		cfg:       cfg,
-		peer:      peer,
-		channels:  channels,
-		writeback: writeback,
-		pipelines: map[string]*pipeline{},
-		warned:    map[string]struct{}{},
+		cfg:           cfg,
+		peer:          peer,
+		channels:      channels,
+		writeback:     writeback,
+		pipelines:     map[string]*pipeline{},
+		warned:        map[string]struct{}{},
+		warnedNodeOUs: map[string]struct{}{},
 	}
 }
 
@@ -186,6 +194,12 @@ func (s *Service) startNewPipelines(ctx context.Context) {
 			s.warnOnce(channelID, fmt.Sprintf("channel MST chainID %d does not match the peer's connected chain %d; not anchoring", mstCfg.ChainID, s.client.ChainID()))
 			continue
 		}
+		// The mstscc write-back gate authorizes only peer-role identities, which
+		// requires the submitting org's MSP to have NodeOUs peer classification.
+		// Without it, write-backs are silently rejected on chain — surface that
+		// loudly (once). Advisory only: anchoring still proceeds (the anchor is
+		// submitted to MST; only the Fabric write-back record would be rejected).
+		s.warnIfWritebackOrgLacksNodeOUs(channelID)
 		s.mu.Lock()
 		_, running := s.pipelines[channelID]
 		s.mu.Unlock()
@@ -219,6 +233,54 @@ func (s *Service) warnOnce(channelID, msg string) {
 	if !seen {
 		logger.Warnw(msg, "channel", channelID)
 	}
+}
+
+// warnIfWritebackOrgLacksNodeOUs logs a loud (once-per-channel) warning when the
+// write-back cannot be authorized because an org's MSP lacks NodeOUs peer
+// classification. When the peer's write-back MSPID is known it targets that org
+// (a definite problem for this peer); otherwise it warns if any application org
+// lacks it. It does not stop anchoring — the anchor still lands on MST; only the
+// Fabric write-back record would be rejected by the mstscc peer-role gate.
+func (s *Service) warnIfWritebackOrgLacksNodeOUs(channelID string) {
+	res := s.peer.GetChannelConfig(channelID)
+	if res == nil {
+		return
+	}
+	config := res.ConfigtxValidator().ConfigProto()
+	if config == nil {
+		return
+	}
+	missing, total := channelconfig.ApplicationOrgsMissingPeerNodeOUs(config)
+	if len(missing) == 0 || total == 0 {
+		return
+	}
+	s.mu.Lock()
+	_, seen := s.warnedNodeOUs[channelID]
+	if !seen {
+		s.warnedNodeOUs[channelID] = struct{}{}
+	}
+	s.mu.Unlock()
+	if seen {
+		return
+	}
+
+	wbMSPID := s.cfg.WriteBack.MSPID
+	if wbMSPID != "" && contains(missing, wbMSPID) {
+		logger.Warnw("MST anchoring is enabled but this peer's write-back org lacks NodeOUs peer classification; write-back records WILL be rejected (enable NodeOUs on the MSP, or point mst.writeback.* at a peer node identity)",
+			"channel", channelID, "writebackMSPID", wbMSPID)
+		return
+	}
+	logger.Warnw("MST anchoring is enabled but some application org(s) lack NodeOUs peer classification; write-back signed by them will be rejected",
+		"channel", channelID, "orgsWithoutNodeOUs", strings.Join(missing, ","))
+}
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) startPipeline(ctx context.Context, channelID string, mstCfg *channelconfig.MSTAnchorConfig) error {

@@ -162,6 +162,14 @@ func (c *clients) queryCC(ccName string, args ...string) ([]byte, error) {
 // block, via cscc GetChannelConfig -> channelconfig.NewBundle. Returns an error
 // when the channel has no MST configuration.
 func (c *clients) fetchMSTConfig(cryptoProvider bccsp.BCCSP) (*channelconfig.MSTAnchorConfig, error) {
+	mstCfg, _, err := c.fetchMSTConfigAndProto(cryptoProvider)
+	return mstCfg, err
+}
+
+// fetchMSTConfigAndProto is fetchMSTConfig that additionally returns the raw
+// channel config proto, for callers (e.g. preflight) that need to inspect other
+// parts of the config such as the orgs' MSP NodeOUs settings.
+func (c *clients) fetchMSTConfigAndProto(cryptoProvider bccsp.BCCSP) (*channelconfig.MSTAnchorConfig, *cb.Config, error) {
 	invocation := &pb.ChaincodeInvocationSpec{
 		ChaincodeSpec: &pb.ChaincodeSpec{
 			Type:        pb.ChaincodeSpec_GOLANG,
@@ -171,25 +179,25 @@ func (c *clients) fetchMSTConfig(cryptoProvider bccsp.BCCSP) (*channelconfig.MST
 	}
 	payload, err := c.processQuery(cb.HeaderType_CONFIG, invocation)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	config := &cb.Config{}
 	if err := proto.Unmarshal(payload, config); err != nil {
-		return nil, fmt.Errorf("unmarshal channel config: %w", err)
+		return nil, nil, fmt.Errorf("unmarshal channel config: %w", err)
 	}
 	bundle, err := channelconfig.NewBundle(channelID, config, cryptoProvider)
 	if err != nil {
-		return nil, fmt.Errorf("build channel config bundle: %w", err)
+		return nil, nil, fmt.Errorf("build channel config bundle: %w", err)
 	}
 	app, ok := bundle.ApplicationConfig()
 	if !ok {
-		return nil, fmt.Errorf("channel %s has no application config", channelID)
+		return nil, nil, fmt.Errorf("channel %s has no application config", channelID)
 	}
 	mstCfg, ok := app.MSTAnchorConfig()
 	if !ok {
-		return nil, fmt.Errorf("channel %s has no MST anchoring configuration", channelID)
+		return nil, nil, fmt.Errorf("channel %s has no MST anchoring configuration", channelID)
 	}
-	return mstCfg, nil
+	return mstCfg, config, nil
 }
 
 // processQuery signs and sends a proposal to the endorser and returns the

@@ -103,6 +103,43 @@ func TestEvaluatePreflightDialFails(t *testing.T) {
 	require.Equal(t, "FAIL", checkFor(t, r, "contract").Status)
 }
 
+func TestEvaluatePreflightNodeOUsAllPresent(t *testing.T) {
+	r := evaluatePreflight(preflightInput{
+		channelID:    "ch",
+		cfg:          &channelconfig.MSTAnchorConfig{Enabled: true, ContractAddress: preflightContract, ChainID: 1337},
+		nodeChainID:  1337,
+		nodeOUsTotal: 2,
+	})
+	require.True(t, r.OK)
+	require.Equal(t, "PASS", checkFor(t, r, "nodeous").Status)
+}
+
+func TestEvaluatePreflightNodeOUsSomeMissingWarns(t *testing.T) {
+	r := evaluatePreflight(preflightInput{
+		channelID:      "ch",
+		cfg:            &channelconfig.MSTAnchorConfig{Enabled: true, ContractAddress: preflightContract, ChainID: 1337},
+		nodeChainID:    1337,
+		nodeOUsMissing: []string{"Org2"},
+		nodeOUsTotal:   2,
+	})
+	require.True(t, r.OK, "a partial NodeOUs gap is a WARN, not a FAIL")
+	c := checkFor(t, r, "nodeous")
+	require.Equal(t, "WARN", c.Status)
+	require.Contains(t, c.Detail, "Org2")
+}
+
+func TestEvaluatePreflightNodeOUsAllMissingFails(t *testing.T) {
+	r := evaluatePreflight(preflightInput{
+		channelID:      "ch",
+		cfg:            &channelconfig.MSTAnchorConfig{Enabled: true, ContractAddress: preflightContract, ChainID: 1337},
+		nodeChainID:    1337,
+		nodeOUsMissing: []string{"Org1", "Org2"},
+		nodeOUsTotal:   2,
+	})
+	require.False(t, r.OK, "no org with NodeOUs means write-back can never land")
+	require.Equal(t, "FAIL", checkFor(t, r, "nodeous").Status)
+}
+
 func TestRenderPreflightText(t *testing.T) {
 	r := evaluatePreflight(preflightInput{
 		channelID:   "mychannel",

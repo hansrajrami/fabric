@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/channelconfig"
@@ -34,6 +35,12 @@ type preflightInput struct {
 	// contractProbeErr is the error from reading the contract (nil = the
 	// contract responded as an MSTAnchor).
 	contractProbeErr error
+	// nodeOUsMissing lists application orgs whose MSP lacks NodeOUs peer
+	// classification; nodeOUsTotal is the number of application orgs inspected.
+	// Write-back signed by an org in nodeOUsMissing is rejected by the mstscc
+	// peer-role gate.
+	nodeOUsMissing []string
+	nodeOUsTotal   int
 }
 
 // checkResult is one line of the preflight checklist.
@@ -91,6 +98,21 @@ func evaluatePreflight(in preflightInput) preflightResult {
 	} else {
 		add("PASS", "contract", fmt.Sprintf("%s responds as an MSTAnchor contract", in.cfg.ContractAddress))
 	}
+
+	// NodeOUs: the mstscc write-back gate authorizes only peer-role identities,
+	// which needs the submitting org's MSP to have NodeOUs peer classification.
+	// Report which application orgs lack it — write-back signed by them is
+	// silently rejected on chain.
+	switch n := len(in.nodeOUsMissing); {
+	case in.nodeOUsTotal == 0:
+		// No application orgs inspected (unusual) — nothing to assert.
+	case n == 0:
+		add("PASS", "nodeous", fmt.Sprintf("all %d application org(s) have NodeOUs peer classification", in.nodeOUsTotal))
+	case n == in.nodeOUsTotal:
+		add("FAIL", "nodeous", fmt.Sprintf("no application org has NodeOUs peer classification (%s) — every write-back will be rejected; enable NodeOUs on the channel MSPs", strings.Join(in.nodeOUsMissing, ", ")))
+	default:
+		add("WARN", "nodeous", fmt.Sprintf("these org(s) lack NodeOUs peer classification: %s — write-back signed by them will be rejected", strings.Join(in.nodeOUsMissing, ", ")))
+	}
 	return r
 }
 
@@ -125,13 +147,14 @@ func preflightCmd(cryptoProvider bccsp.BCCSP) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			mstCfg, err := cl.fetchMSTConfig(cryptoProvider)
+			mstCfg, config, err := cl.fetchMSTConfigAndProto(cryptoProvider)
 			if err != nil {
 				return err
 			}
 
 			in := preflightInput{channelID: channelID, cfg: mstCfg}
 			if mstCfg.Enabled {
+				in.nodeOUsMissing, in.nodeOUsTotal = channelconfig.ApplicationOrgsMissingPeerNodeOUs(config)
 				cfg, err := evmConfigFor(mstCfg)
 				if err != nil {
 					return err
