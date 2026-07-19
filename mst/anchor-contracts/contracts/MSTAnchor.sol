@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+
 /// @title  IMSTAnchor — public, permanent record of Fabric tx commitments.
 interface IMSTAnchor {
     event Anchored(
@@ -40,9 +42,15 @@ interface IMSTAnchor {
 ///         already inside the commitment, so no caller-supplied time is trusted.
 ///
 ///         Writes MAY be restricted to known relayer addresses (mild integrity guard,
-///         fixed at deploy time via `allowlistEnabled`). This is not the security model:
+///         set at initialization via `allowlistEnabled`). This is not the security model:
 ///         a commitment is meaningless to forge without the real Fabric data.
-contract MSTAnchor is IMSTAnchor {
+///
+///         Deployed behind a TransparentUpgradeableProxy: the address is stable across
+///         implementation upgrades, so a channel never has to repoint at a new contract
+///         (which would split its anchor history). Upgradeability is a governance
+///         trade-off — the proxy admin can change the logic and therefore alter recorded
+///         anchors; see the project README for the admin-key custody model.
+contract MSTAnchor is IMSTAnchor, Initializable {
     struct Anchor {
         bytes32 commitment; // slot n
         uint64 blockNumber; // slot n+1 ─┐
@@ -63,18 +71,39 @@ contract MSTAnchor is IMSTAnchor {
         bool exists; //        ─┘
     }
 
+    // Storage layout is append-only across upgrades. Do not reorder or remove these;
+    // add new state variables only at the end (consuming the __gap below). `owner` and
+    // `allowlistEnabled` are plain storage (allowlistEnabled is NOT immutable, since an
+    // immutable would live in the implementation bytecode, not the proxy's storage).
     address public owner;
-    bool public immutable allowlistEnabled;
+    bool public allowlistEnabled;
     mapping(address => bool) public isRelayer;
     mapping(bytes32 => Anchor) private _anchors;
     mapping(bytes32 => RootRecord) private _roots;
+
+    // Reserved storage slots for forward-compatible upgrades (append new fields before
+    // shrinking this gap).
+    uint256[45] private __gap;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
         _;
     }
 
-    constructor(bool allowlistEnabled_, address[] memory initialRelayers) {
+    /// @dev The implementation is never initialized directly; only the proxy is, via
+    ///      `initialize`. Disabling initializers on the implementation prevents anyone
+    ///      from taking it over (defense in depth — the implementation holds no state).
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the proxy's state. Replaces the constructor for the upgradeable
+    ///         deployment; guarded so it runs exactly once.
+    function initialize(bool allowlistEnabled_, address[] memory initialRelayers)
+        external
+        initializer
+    {
         owner = msg.sender;
         allowlistEnabled = allowlistEnabled_;
         for (uint256 i = 0; i < initialRelayers.length; ++i) {

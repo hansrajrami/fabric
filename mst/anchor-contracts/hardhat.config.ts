@@ -1,6 +1,7 @@
 import { HardhatUserConfig, subtask } from "hardhat/config";
 import { TASK_COMPILE_SOLIDITY_GET_SOLC_BUILD } from "hardhat/builtin-tasks/task-names";
 import "@nomicfoundation/hardhat-toolbox";
+import "@openzeppelin/hardhat-upgrades";
 
 const SOLC_VERSION = "0.8.28";
 

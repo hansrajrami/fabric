@@ -1,22 +1,32 @@
 import { expect } from "chai";
-import { ethers } from "hardhat";
+import { ethers, upgrades } from "hardhat";
 import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import type { MSTAnchor } from "../typechain-types";
 
 const id = (s: string) => ethers.keccak256(ethers.toUtf8Bytes(s));
 
+// Deploy MSTAnchor behind a TransparentUpgradeableProxy (its real deployment shape).
+// initialize(bool,address[]) runs once with the deployer as owner.
+async function deployProxy(allowlistEnabled: boolean, relayers: string[]): Promise<MSTAnchor> {
+  const factory = await ethers.getContractFactory("MSTAnchor");
+  const proxy = await upgrades.deployProxy(factory, [allowlistEnabled, relayers], {
+    kind: "transparent",
+    initializer: "initialize",
+  });
+  await proxy.waitForDeployment();
+  return proxy as unknown as MSTAnchor;
+}
+
 describe("MSTAnchor", () => {
   async function deployOpen() {
     const [deployer, other] = await ethers.getSigners();
-    const factory = await ethers.getContractFactory("MSTAnchor");
-    const contract = (await factory.deploy(false, [])) as MSTAnchor;
+    const contract = await deployProxy(false, []);
     return { contract, deployer, other };
   }
 
   async function deployAllowlisted() {
     const [deployer, relayer, stranger] = await ethers.getSigners();
-    const factory = await ethers.getContractFactory("MSTAnchor");
-    const contract = (await factory.deploy(true, [relayer.address])) as MSTAnchor;
+    const contract = await deployProxy(true, [relayer.address]);
     return { contract, deployer, relayer, stranger };
   }
 
@@ -164,12 +174,14 @@ describe("MSTAnchor", () => {
       );
     });
 
-    it("constructor rejects a zero relayer address", async () => {
+    it("initializer rejects a zero relayer address", async () => {
       const factory = await ethers.getContractFactory("MSTAnchor");
-      await expect(factory.deploy(true, [ethers.ZeroAddress])).to.be.revertedWithCustomError(
-        factory,
-        "ZeroAddress"
-      );
+      await expect(
+        upgrades.deployProxy(factory, [true, [ethers.ZeroAddress]], {
+          kind: "transparent",
+          initializer: "initialize",
+        })
+      ).to.be.revertedWithCustomError(factory, "ZeroAddress");
     });
   });
 
@@ -237,6 +249,46 @@ describe("MSTAnchor", () => {
         .to.emit(contract, "OwnershipTransferred")
         .withArgs(deployer.address, other.address);
       expect(await contract.owner()).to.equal(other.address);
+    });
+  });
+
+  describe("upgradeability", () => {
+    it("upgrades in place: same address, prior anchors preserved, new logic live", async () => {
+      const [deployer] = await ethers.getSigners();
+      const proxy = await deployProxy(false, []);
+      const addrBefore = await proxy.getAddress();
+
+      // Record an anchor on v1.
+      const txId = id("pre-upgrade");
+      const commitment = id("c-pre");
+      await (await proxy.anchor(txId, commitment, 5n)).wait();
+
+      // Upgrade the implementation in place (storage-layout checked by the plugin).
+      const v2Factory = await ethers.getContractFactory("MSTAnchorV2");
+      const upgraded = await upgrades.upgradeProxy(addrBefore, v2Factory);
+      await upgraded.waitForDeployment();
+
+      // The channel-facing address is unchanged — no history split.
+      expect(await upgraded.getAddress()).to.equal(addrBefore);
+
+      // The anchor recorded before the upgrade is still readable.
+      const [gotCommitment, gotBlock, , exists] = await upgraded.getAnchor(txId);
+      expect(gotCommitment).to.equal(commitment);
+      expect(gotBlock).to.equal(5n);
+      expect(exists).to.equal(true);
+
+      // Owner (initialized state) survives the upgrade.
+      expect(await upgraded.owner()).to.equal(deployer.address);
+
+      // New implementation logic is live at the same address.
+      const v2 = await ethers.getContractAt("MSTAnchorV2", addrBefore);
+      expect(await v2.version()).to.equal(2n);
+
+      // Anchoring still works post-upgrade.
+      await expect(upgraded.anchor(id("post-upgrade"), id("c-post"), 6n)).to.emit(
+        upgraded,
+        "Anchored"
+      );
     });
   });
 

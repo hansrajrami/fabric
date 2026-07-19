@@ -11,6 +11,7 @@ package evm_test
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -39,24 +40,44 @@ const (
 	devKey1 = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 )
 
-// encodeConstructor ABI-encodes MSTAnchor's constructor(bool allowlistEnabled,
-// address[] initialRelayers) tail.
-func encodeConstructor(allowlistEnabled bool, relayers []common.Address) []byte {
-	out := make([]byte, 3*32+len(relayers)*32)
+// selector4 returns the 4-byte function selector for a Solidity signature.
+func selector4(sig string) []byte { return crypto.Keccak256([]byte(sig))[:4] }
+
+// encodeInitialize ABI-encodes the initialize(bool allowlistEnabled,
+// address[] initialRelayers) call the proxy runs once in its own storage.
+func encodeInitialize(allowlistEnabled bool, relayers []common.Address) []byte {
+	head := make([]byte, 2*32) // (bool, offset)
 	if allowlistEnabled {
-		out[31] = 1
+		head[31] = 1
 	}
-	out[63] = 0x40 // offset of the address[] (word 1 -> word 2)
-	binary.BigEndian.PutUint64(out[88:96], uint64(len(relayers)))
+	head[63] = 0x40 // offset of the address[] tail (2 words in)
+	tail := make([]byte, 32+len(relayers)*32)
+	binary.BigEndian.PutUint64(tail[24:32], uint64(len(relayers)))
 	for i, r := range relayers {
-		copy(out[96+i*32+12:96+i*32+32], r[:])
+		copy(tail[32+i*32+12:32+i*32+32], r[:])
 	}
-	return out
+	return append(append(selector4("initialize(bool,address[])"), head...), tail...)
 }
 
-func deployAnchor(t *testing.T, rpcURL string, allowlistEnabled bool, relayers []common.Address) string {
+// encodeProxyConstructor ABI-encodes TransparentUpgradeableProxy's
+// constructor(address logic, address initialOwner, bytes data) tail. initialOwner
+// owns the auto-created ProxyAdmin (the upgrade key); data is the initialize call.
+func encodeProxyConstructor(logic, initialOwner common.Address, data []byte) []byte {
+	head := make([]byte, 3*32)
+	copy(head[12:32], logic[:])
+	copy(head[32+12:64], initialOwner[:])
+	head[95] = 0x60 // offset of the bytes arg (3 words in)
+	padded := (len(data) + 31) / 32 * 32
+	tail := make([]byte, 32+padded)
+	binary.BigEndian.PutUint64(tail[24:32], uint64(len(data)))
+	copy(tail[32:32+len(data)], data)
+	return append(head, tail...)
+}
+
+// readBytecode loads a compiled artifact's creation bytecode from abi/.
+func readBytecode(t *testing.T, name string) []byte {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.FromSlash("../../anchor-contracts/abi/MSTAnchor.json"))
+	raw, err := os.ReadFile(filepath.FromSlash("../../anchor-contracts/abi/" + name))
 	if err != nil {
 		t.Fatalf("read artifact (run `npm run build` in mst/anchor-contracts first): %v", err)
 	}
@@ -66,25 +87,17 @@ func deployAnchor(t *testing.T, rpcURL string, allowlistEnabled bool, relayers [
 	if err := json.Unmarshal(raw, &artifact); err != nil {
 		t.Fatal(err)
 	}
-	bytecode, err := hex.DecodeString(strings.TrimPrefix(artifact.Bytecode, "0x"))
+	bc, err := hex.DecodeString(strings.TrimPrefix(artifact.Bytecode, "0x"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	deployData := append(bytecode, encodeConstructor(allowlistEnabled, relayers)...)
+	return bc
+}
 
-	eth, err := ethclient.Dial(rpcURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer eth.Close()
-	ctx := context.Background()
-
-	key, _ := crypto.HexToECDSA(devKey)
+// deployRaw sends a contract-creation transaction and returns the deployed address.
+func deployRaw(t *testing.T, ctx context.Context, eth *ethclient.Client, key *ecdsa.PrivateKey, chainID *big.Int, data []byte) common.Address {
+	t.Helper()
 	from := crypto.PubkeyToAddress(key.PublicKey)
-	chainID, err := eth.ChainID(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	nonce, err := eth.PendingNonceAt(ctx, from)
 	if err != nil {
 		t.Fatal(err)
@@ -99,8 +112,8 @@ func deployAnchor(t *testing.T, rpcURL string, allowlistEnabled bool, relayers [
 		Nonce:     nonce,
 		GasTipCap: tip,
 		GasFeeCap: new(big.Int).Add(tip, new(big.Int).Mul(head.BaseFee, big.NewInt(2))),
-		Gas:       1_500_000,
-		Data:      deployData,
+		Gas:       2_500_000, // headroom for the proxy + auto ProxyAdmin + initialize
+		Data:      data,
 	})
 	signed, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
 	if err != nil {
@@ -109,7 +122,6 @@ func deployAnchor(t *testing.T, rpcURL string, allowlistEnabled bool, relayers [
 	if err := eth.SendTransaction(ctx, signed); err != nil {
 		t.Fatal(err)
 	}
-
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		receipt, err := eth.TransactionReceipt(ctx, signed.Hash())
@@ -117,7 +129,7 @@ func deployAnchor(t *testing.T, rpcURL string, allowlistEnabled bool, relayers [
 			if receipt.Status != types.ReceiptStatusSuccessful {
 				t.Fatal("deploy reverted")
 			}
-			return receipt.ContractAddress.Hex()
+			return receipt.ContractAddress
 		}
 		if err != ethereum.NotFound {
 			t.Fatal(err)
@@ -127,6 +139,36 @@ func deployAnchor(t *testing.T, rpcURL string, allowlistEnabled bool, relayers [
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// deployAnchor deploys the MSTAnchor implementation and a TransparentUpgradeableProxy
+// in front of it (its real deployment shape), and returns the PROXY address — the
+// stable, channel-facing address the relay talks to. The ABI/selectors are identical
+// through the proxy's delegatecall, so the client code is unchanged.
+func deployAnchor(t *testing.T, rpcURL string, allowlistEnabled bool, relayers []common.Address) string {
+	t.Helper()
+	eth, err := ethclient.Dial(rpcURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eth.Close()
+	ctx := context.Background()
+	key, _ := crypto.HexToECDSA(devKey)
+	from := crypto.PubkeyToAddress(key.PublicKey)
+	chainID, err := eth.ChainID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Implementation — its constructor only calls _disableInitializers() (no args).
+	impl := deployRaw(t, ctx, eth, key, chainID, readBytecode(t, "MSTAnchor.json"))
+	// 2. Proxy — initialize runs in the proxy's storage with `from` as owner; `from`
+	//    also owns the ProxyAdmin (deployer-key upgrade authority).
+	proxyDeploy := append(
+		readBytecode(t, "TransparentUpgradeableProxy.json"),
+		encodeProxyConstructor(impl, from, encodeInitialize(allowlistEnabled, relayers))...,
+	)
+	return deployRaw(t, ctx, eth, key, chainID, proxyDeploy).Hex()
 }
 
 // TestIntegrationRelayerAllowlist exercises the owner-only setRelayer path on an
@@ -170,9 +212,12 @@ func TestIntegrationRelayerAllowlist(t *testing.T) {
 		return c.WaitConfirmed(ctx, hash, 1)
 	}
 
-	// 1. Non-allowlisted guest → NotRelayer revert.
-	if err := anchor(guest, txID); !errors.Is(err, evm.ErrReverted) {
-		t.Fatalf("expected ErrReverted for non-allowlisted anchor, got %v", err)
+	// 1. Non-allowlisted guest → NotRelayer revert. The revert may surface either
+	// when the receipt is checked (ErrReverted) or at send time — some nodes
+	// (e.g. Hardhat with throwOnTransactionFailures) reject a reverting tx from
+	// eth_sendTransaction — so accept both.
+	if err := anchor(guest, txID); !isReverted(err) {
+		t.Fatalf("expected a revert for non-allowlisted anchor, got %v", err)
 	}
 
 	// 2. Owner allowlists the guest.
@@ -204,9 +249,17 @@ func TestIntegrationRelayerAllowlist(t *testing.T) {
 	if err := owner.WaitConfirmed(ctx, rmHash, 1); err != nil {
 		t.Fatalf("setRelayer remove not confirmed: %v", err)
 	}
-	if err := anchor(guest, txID2); !errors.Is(err, evm.ErrReverted) {
-		t.Fatalf("expected ErrReverted after removal, got %v", err)
+	if err := anchor(guest, txID2); !isReverted(err) {
+		t.Fatalf("expected a revert after removal, got %v", err)
 	}
+}
+
+// isReverted reports whether err represents an on-chain revert, surfaced either as
+// a mined-and-failed receipt (evm.ErrReverted) or at send time (nodes that reject a
+// reverting tx from eth_sendTransaction).
+func isReverted(err error) bool {
+	return err != nil && (errors.Is(err, evm.ErrReverted) ||
+		strings.Contains(strings.ToLower(err.Error()), "revert"))
 }
 
 func TestIntegrationClientAndSender(t *testing.T) {

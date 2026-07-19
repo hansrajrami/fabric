@@ -171,6 +171,14 @@ for the consortium model, for two reasons:
   path to it. An on-ledger oracle or light client would only re-implement that
   same check at far higher cost and chain-specific complexity.
 
+> **Upgradeable-contract caveat:** because `MSTAnchor` is now behind an
+> upgradeable proxy, the on-chain record `peer mst verify` reads is immutable
+> only *as long as the proxy is not upgraded to malicious logic*. A verifier who
+> needs strong assurance should also confirm the implementation was not swapped
+> unexpectedly (watch the proxy's upgrade events / pin an expected implementation
+> address). With a timelock+multisig ProxyAdmin this is a bounded, observable
+> risk; with the default single deployer key it rests on that key's custody.
+
 A **named-relayer allowlist** (fewer writers) or an **EVM light-client oracle**
 (on-ledger verification) would only be warranted if an **automated, on-ledger
 consumer** were to act on a record *without* running `peer mst verify` first — a
@@ -219,9 +227,19 @@ operational knobs (RPC URL/credentials, workers, cadence, outbox path, and the
   contract.
 - **Phase 1 coexistence / migration is out of scope.** New channels use Phase
   1.5; existing channels stay on Phase 1 until explicitly migrated.
-- **Contract rotation splits history.** A channel's contract is effectively
-  immutable once anchoring begins; pointing the config at a new address splits
-  the anchor history across contracts, and verifiers must know both.
+- **Contract rotation — solved by the upgradeable proxy, at a trust cost.** The
+  `MSTAnchor` contract is deployed behind an OpenZeppelin
+  **TransparentUpgradeableProxy** (`mst/anchor-contracts`), so the channel's
+  contract address is **stable across implementation upgrades** — a same-chain
+  fix or change no longer forces a new address, so anchor history is not split.
+  The trade-off is deliberate and must be understood: whoever controls the
+  **ProxyAdmin** (the deployer key by default) can upgrade the logic and thereby
+  **alter, forge, or delete recorded anchors**. So on-chain immutability is now
+  *conditional on no malicious/erroneous upgrade*, not absolute. For production,
+  make the ProxyAdmin a **timelock + multisig** and monitor upgrade events (see
+  [`anchor-contracts/README.md`](anchor-contracts/README.md)). Cross-chain
+  migration (a different EVM chain) still requires a new deployment and still
+  splits history.
 - **MST reorg vs. recorded hash.** Confirmations mitigate but do not eliminate a
   reorg invalidating a recorded `evmTxHash`.
 
