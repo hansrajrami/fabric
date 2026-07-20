@@ -161,6 +161,12 @@ func (b *Binding) GetAnchor(ctx context.Context, fabricTxID [32]byte) (*AnchorRe
 	return b.client.getAnchorAt(ctx, b.contract, fabricTxID)
 }
 
+// AnchorTxHash recovers the anchoring transaction hash from the bound contract's
+// Anchored event; see (*Client).AnchorTxHash.
+func (b *Binding) AnchorTxHash(ctx context.Context, fabricTxID [32]byte) ([32]byte, error) {
+	return b.client.anchorTxHashAt(ctx, b.contract, fabricTxID)
+}
+
 func (b *Binding) GetRoot(ctx context.Context, root [32]byte) (*RootRecord, error) {
 	return b.client.getRootAt(ctx, b.contract, root)
 }
@@ -234,6 +240,41 @@ func (c *Client) getAnchorAt(ctx context.Context, contract common.Address, fabri
 		return nil, nil
 	}
 	return rec, nil
+}
+
+// anchoredEventSig is topic[0] of the MSTAnchor Anchored event:
+// keccak256("Anchored(bytes32,bytes32,uint64,uint64)"). fabricTxId is the sole
+// indexed field, so it is topic[1].
+var anchoredEventSig = crypto.Keccak256Hash([]byte("Anchored(bytes32,bytes32,uint64,uint64)"))
+
+// AnchorTxHash recovers the EVM transaction hash that anchored fabricTxID from
+// the Client's default contract by querying its Anchored event log (fabricTxId
+// is indexed). It returns a zero hash and no error when no matching event is
+// found (e.g. the node prunes logs, or the anchor predates the queried range).
+// This backfills the write-back reference when the sender short-circuits an
+// already-anchored entry and therefore never observed the original submission.
+func (c *Client) AnchorTxHash(ctx context.Context, fabricTxID [32]byte) ([32]byte, error) {
+	return c.anchorTxHashAt(ctx, c.contract, fabricTxID)
+}
+
+func (c *Client) anchorTxHashAt(ctx context.Context, contract common.Address, fabricTxID [32]byte) ([32]byte, error) {
+	query := ethereum.FilterQuery{
+		Addresses: []common.Address{contract},
+		Topics: [][]common.Hash{
+			{anchoredEventSig},
+			{common.BytesToHash(fabricTxID[:])},
+		},
+	}
+	logs, err := c.eth.FilterLogs(ctx, query)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("evm: filter Anchored logs: %w", err)
+	}
+	if len(logs) == 0 {
+		return [32]byte{}, nil
+	}
+	// anchor is idempotent (a re-anchor is a no-op that emits no event), so at
+	// most one Anchored event exists per fabricTxID; take the last defensively.
+	return [32]byte(logs[len(logs)-1].TxHash), nil
 }
 
 // SubmitAnchor sends anchor(fabricTxID, commitment, blockNumber) to the

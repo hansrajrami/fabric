@@ -53,6 +53,7 @@ import (
 type simMSTChain struct {
 	mu       sync.Mutex
 	anchored map[string]map[[32]byte]*evm.AnchorRecord // contract -> fabricTxID -> record
+	anchorTx map[string]map[[32]byte][32]byte          // contract -> fabricTxID -> anchoring tx hash
 	receipts map[[32]byte]bool                         // evm tx hash -> included
 	next     byte
 }
@@ -60,6 +61,7 @@ type simMSTChain struct {
 func newSimMSTChain() *simMSTChain {
 	return &simMSTChain{
 		anchored: map[string]map[[32]byte]*evm.AnchorRecord{},
+		anchorTx: map[string]map[[32]byte][32]byte{},
 		receipts: map[[32]byte]bool{},
 	}
 }
@@ -88,6 +90,12 @@ func (c *simMSTChain) submit(contract string, fabricTxID, commitment [32]byte, b
 	}
 	if _, exists := m[fabricTxID]; !exists { // contract idempotency: first write wins
 		m[fabricTxID] = &evm.AnchorRecord{Commitment: commitment, BlockNumber: blockNumber, EVMTimestamp: 1, Exists: true}
+		tm := c.anchorTx[contract]
+		if tm == nil {
+			tm = map[[32]byte][32]byte{}
+			c.anchorTx[contract] = tm
+		}
+		tm[fabricTxID] = hash
 	}
 	return hash
 }
@@ -103,6 +111,15 @@ var _ sender.AnchorClient = (*boundSimClient)(nil)
 
 func (b *boundSimClient) GetAnchor(_ context.Context, fabricTxID [32]byte) (*evm.AnchorRecord, error) {
 	return b.chain.get(b.contract, fabricTxID), nil
+}
+
+func (b *boundSimClient) AnchorTxHash(_ context.Context, fabricTxID [32]byte) ([32]byte, error) {
+	b.chain.mu.Lock()
+	defer b.chain.mu.Unlock()
+	if m := b.chain.anchorTx[b.contract]; m != nil {
+		return m[fabricTxID], nil
+	}
+	return [32]byte{}, nil
 }
 
 func (b *boundSimClient) SubmitAnchor(_ context.Context, fabricTxID, commitment [32]byte, blockNumber uint64) ([32]byte, error) {

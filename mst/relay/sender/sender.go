@@ -23,6 +23,9 @@ import (
 // it, and tests use a scripted fake.
 type AnchorClient interface {
 	GetAnchor(ctx context.Context, fabricTxID [32]byte) (*evm.AnchorRecord, error)
+	// AnchorTxHash recovers the EVM tx hash that anchored fabricTxID from the
+	// contract's event log; a zero hash (no error) means it could not be found.
+	AnchorTxHash(ctx context.Context, fabricTxID [32]byte) ([32]byte, error)
 	SubmitAnchor(ctx context.Context, fabricTxID, commitment [32]byte, blockNumber uint64) ([32]byte, error)
 	SubmitAnchorBatch(ctx context.Context, ids, commitments [][32]byte, blockNumbers []uint64) ([32]byte, error)
 	SubmitAnchorRoot(ctx context.Context, root [32]byte, leafCount uint64) ([32]byte, error)
@@ -216,11 +219,23 @@ func (s *Sender) processPending(ctx context.Context, e *outbox.Entry) {
 				"onchain", fmt.Sprintf("%x", rec.Commitment), "local", fmt.Sprintf("%x", e.Commitment))
 			return
 		}
-		if _, err := s.store.Transition(e.FabricTxID, outbox.StatusPending, outbox.StatusConfirmed, nil); err != nil {
+		// The anchor is already on chain but this run never submitted it, so we
+		// have no EVM tx hash to record as the write-back reference. Recover it
+		// from the contract's Anchored event (best-effort: a failure or a pruned
+		// log leaves it zero rather than blocking the already-confirmed anchor).
+		var anchorTx [32]byte
+		if h, herr := s.client.AnchorTxHash(ctx, e.FabricTxID); herr != nil {
+			logger.Warn("could not recover anchor tx hash for short-circuited entry", "err", herr)
+		} else {
+			anchorTx = h
+		}
+		if _, err := s.store.Transition(e.FabricTxID, outbox.StatusPending, outbox.StatusConfirmed, func(en *outbox.Entry) {
+			en.EVMTxHash = anchorTx
+		}); err != nil {
 			logger.Error("short-circuit transition failed", "err", err)
 			return
 		}
-		logger.Info("already anchored; short-circuited to CONFIRMED")
+		logger.Info("already anchored; short-circuited to CONFIRMED", "evmTx", fmt.Sprintf("%x", anchorTx[:8]))
 		s.finish(ctx, e.FabricTxID, logger)
 		return
 	}

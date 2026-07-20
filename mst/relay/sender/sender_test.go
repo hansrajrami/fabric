@@ -17,9 +17,10 @@ import (
 type fakeClient struct {
 	mu sync.Mutex
 
-	anchored map[[32]byte]*evm.AnchorRecord // fabricTxID -> record
-	roots    map[[32]byte]*evm.RootRecord   // merkle root -> record
-	receipts map[[32]byte]bool              // evm tx hash -> included
+	anchored  map[[32]byte]*evm.AnchorRecord // fabricTxID -> record
+	anchorTxs map[[32]byte][32]byte          // fabricTxID -> anchoring tx hash
+	roots     map[[32]byte]*evm.RootRecord   // merkle root -> record
+	receipts  map[[32]byte]bool              // evm tx hash -> included
 
 	batchSubmits int // SubmitAnchorBatch calls
 	rootSubmits  int // SubmitAnchorRoot calls
@@ -28,6 +29,7 @@ type fakeClient struct {
 	submitBlackout bool // submits succeed but tx never lands (mempool drop)
 	confirmRevert  bool // confirmations report revert
 	getAnchorErr   error
+	anchorTxErr    error
 
 	submits  int
 	nextHash byte
@@ -35,10 +37,20 @@ type fakeClient struct {
 
 func newFakeClient() *fakeClient {
 	return &fakeClient{
-		anchored: map[[32]byte]*evm.AnchorRecord{},
-		roots:    map[[32]byte]*evm.RootRecord{},
-		receipts: map[[32]byte]bool{},
+		anchored:  map[[32]byte]*evm.AnchorRecord{},
+		anchorTxs: map[[32]byte][32]byte{},
+		roots:     map[[32]byte]*evm.RootRecord{},
+		receipts:  map[[32]byte]bool{},
 	}
+}
+
+func (f *fakeClient) AnchorTxHash(_ context.Context, txID [32]byte) ([32]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.anchorTxErr != nil {
+		return [32]byte{}, f.anchorTxErr
+	}
+	return f.anchorTxs[txID], nil
 }
 
 func (f *fakeClient) GetAnchor(_ context.Context, txID [32]byte) (*evm.AnchorRecord, error) {
@@ -68,6 +80,7 @@ func (f *fakeClient) SubmitAnchor(_ context.Context, txID, commitment [32]byte, 
 			f.anchored[txID] = &evm.AnchorRecord{
 				Commitment: commitment, BlockNumber: blockNumber, EVMTimestamp: 1720001111, Exists: true,
 			}
+			f.anchorTxs[txID] = hash // the Anchored event's tx (recoverable later)
 		}
 	}
 	return hash, nil
@@ -151,6 +164,7 @@ func (f *fakeClient) GetRoot(_ context.Context, root [32]byte) (*evm.RootRecord,
 type recordingWriteBack struct {
 	mu       sync.Mutex
 	recorded [][32]byte
+	lastRefs map[[32]byte][32]byte // fabricTxID -> EVMTxHash seen at write-back
 	failures int
 }
 
@@ -162,6 +176,10 @@ func (r *recordingWriteBack) Record(_ context.Context, e *outbox.Entry) error {
 		return errors.New("fabric unavailable")
 	}
 	r.recorded = append(r.recorded, e.FabricTxID)
+	if r.lastRefs == nil {
+		r.lastRefs = map[[32]byte][32]byte{}
+	}
+	r.lastRefs[e.FabricTxID] = e.EVMTxHash
 	return nil
 }
 
@@ -252,11 +270,13 @@ func TestAlreadyAnchoredShortCircuitsWithoutGas(t *testing.T) {
 	store := openStore(t)
 	client := newFakeClient()
 	seedPending(t, store, 7)
-	// Another relayer already anchored it with OUR commitment.
+	// Another relayer already anchored it with OUR commitment, at a known tx.
 	e, _ := store.Get(txKey(7))
 	client.anchored[txKey(7)] = &evm.AnchorRecord{Commitment: e.Commitment, Exists: true}
+	client.anchorTxs[txKey(7)] = txKey(0xAB)
 
-	snd := newSender(t, store, client, &recordingWriteBack{}, Config{})
+	wb := &recordingWriteBack{}
+	snd := newSender(t, store, client, wb, Config{})
 	if err := snd.FlushOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +285,37 @@ func TestAlreadyAnchoredShortCircuitsWithoutGas(t *testing.T) {
 	}
 	if client.submits != 0 {
 		t.Fatalf("short-circuit must not submit; submits=%d", client.submits)
+	}
+	// The write-back reference is backfilled from the contract's Anchored event,
+	// not left zero, even though this run never submitted the anchor.
+	if got := wb.lastRefs[txKey(7)]; got != txKey(0xAB) {
+		t.Fatalf("want write-back ref %x (recovered from event log), got %x", txKey(0xAB), got)
+	}
+	if e, _ := store.Get(txKey(7)); e.EVMTxHash != txKey(0xAB) {
+		t.Fatalf("stored EVMTxHash not backfilled: got %x", e.EVMTxHash)
+	}
+}
+
+func TestAlreadyAnchoredToleratesMissingEventLog(t *testing.T) {
+	// If the anchoring tx hash cannot be recovered (pruned logs / RPC error),
+	// the short-circuit still completes; the reference is just left zero.
+	store := openStore(t)
+	client := newFakeClient()
+	seedPending(t, store, 7)
+	e, _ := store.Get(txKey(7))
+	client.anchored[txKey(7)] = &evm.AnchorRecord{Commitment: e.Commitment, Exists: true}
+	client.anchorTxErr = errors.New("log range too large")
+
+	wb := &recordingWriteBack{}
+	snd := newSender(t, store, client, wb, Config{})
+	if err := snd.FlushOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(t, store, 7); got != outbox.StatusDone {
+		t.Fatalf("want DONE despite recovery failure, got %s", got)
+	}
+	if got := wb.lastRefs[txKey(7)]; got != ([32]byte{}) {
+		t.Fatalf("want zero ref when recovery fails, got %x", got)
 	}
 }
 
