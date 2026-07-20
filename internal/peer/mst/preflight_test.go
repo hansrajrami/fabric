@@ -140,6 +140,45 @@ func TestEvaluatePreflightNodeOUsAllMissingFails(t *testing.T) {
 	require.Equal(t, "FAIL", checkFor(t, r, "nodeous").Status)
 }
 
+func TestEvaluatePreflightWritersAllAdmitPeer(t *testing.T) {
+	r := evaluatePreflight(preflightInput{
+		channelID:    "ch",
+		cfg:          &channelconfig.MSTAnchorConfig{Enabled: true, ContractAddress: preflightContract, ChainID: 1337},
+		nodeChainID:  1337,
+		writersTotal: 2,
+	})
+	require.True(t, r.OK)
+	require.Equal(t, "PASS", checkFor(t, r, "writers").Status)
+}
+
+func TestEvaluatePreflightWritersSomeRejectWarns(t *testing.T) {
+	r := evaluatePreflight(preflightInput{
+		channelID:            "ch",
+		cfg:                  &channelconfig.MSTAnchorConfig{Enabled: true, ContractAddress: preflightContract, ChainID: 1337},
+		nodeChainID:          1337,
+		writersRejectingPeer: []string{"Org2"},
+		writersTotal:         2,
+	})
+	require.True(t, r.OK, "a partial Writers gap is a WARN, not a FAIL")
+	c := checkFor(t, r, "writers")
+	require.Equal(t, "WARN", c.Status)
+	require.Contains(t, c.Detail, "Org2")
+}
+
+func TestEvaluatePreflightWritersAllRejectFails(t *testing.T) {
+	r := evaluatePreflight(preflightInput{
+		channelID:            "ch",
+		cfg:                  &channelconfig.MSTAnchorConfig{Enabled: true, ContractAddress: preflightContract, ChainID: 1337},
+		nodeChainID:          1337,
+		writersRejectingPeer: []string{"Org1", "Org2"},
+		writersTotal:         2,
+	})
+	require.False(t, r.OK, "no org admitting peer in Writers means the orderer rejects every write-back")
+	c := checkFor(t, r, "writers")
+	require.Equal(t, "FAIL", c.Status)
+	require.Contains(t, c.Detail, "FORBIDDEN")
+}
+
 func TestRenderPreflightText(t *testing.T) {
 	r := evaluatePreflight(preflightInput{
 		channelID:   "mychannel",

@@ -31,6 +31,14 @@ For the design rationale see [PHASE-1.5.md](PHASE-1.5.md) and
   channel that enables the capability).
 - **NodeOUs enabled** on every participating org's MSP (`config.yaml` with
   `NodeOUs.Enable: true`) — the write-back peer-role gate fails closed without it.
+- **The anchoring org's channel `Writers` policy must admit the peer role** —
+  e.g. `Rule: "OR('Org1MSP.admin','Org1MSP.client','Org1MSP.peer')"`. The
+  write-back is signed by a peer-role identity (to pass the mstscc gate), but the
+  orderer independently evaluates the broadcast against `Writers`, and the default
+  NodeOUs `Writers` = `OR('Org.admin','Org.client')` **excludes** peer. Without
+  the peer role in `Writers`, endorsement succeeds but the orderer rejects the
+  transaction with `FORBIDDEN` (`peer mst preflight` reports this on its `writers`
+  line, and the peer logs a startup warning).
 - An MST (EVM) endpoint: any JSON-RPC URL. For dev: `cd mst/anchor-contracts && npm install && npx hardhat node`.
 - A funded EVM account for the relayer (it pays gas). Keep its key OUT of files —
   read from the `MST_RELAYER_KEY` env var only.
@@ -206,6 +214,7 @@ compliance → `opt-in` + `individual` + `per-tx`; high-volume audit trail → `
 | A peer refuses to join the channel / rejects the config | it's a vanilla binary (no `V2_5_MSTANCHOR` capability) or doesn't run `mstscc` — rebuild from this fork and enable the SCC |
 | Config-update rejected at apply time | `MSTAnchor` value without the capability, or a malformed/zero contract address / inconsistent cadence — run `peer mst preflight` |
 | Anchors land on MST but no ledger status; write-backs rejected | the write-back org lacks NodeOUs (peer-role gate fails closed), or `mst.writeback.*` is a client cert not the peer signcert — check the startup warning / `peer mst preflight` nodeous line |
+| Write-back endorses but fails with `FORBIDDEN ... Writers` from the orderer | the channel `Writers` policy excludes the peer role — add it, e.g. `OR('Org.admin','Org.client','Org.peer')`; `peer mst preflight` flags this on its `writers` line |
 | Peer refuses to anchor a channel | its declared `ChainID` doesn't match the peer's RPC chain — point `mst.evm.rpcURL` at the right node |
 | Peer refuses to start with `mstanchor:` error | incomplete `mst:` config or missing `MST_RELAYER_KEY` — intentional fail-fast |
 | Entries stuck PENDING, balance gauge low/absent | relayer account out of gas, or MST RPC unreachable (backoff retries automatically) |

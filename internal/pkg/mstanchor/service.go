@@ -66,6 +66,10 @@ type Service struct {
 	// (which does not skip anchoring) neither swallows nor is swallowed by the
 	// allowlist/chainID warnings above.
 	warnedNodeOUs map[string]struct{}
+	// warnedWriters tracks the once-per-channel advisory for a Writers policy
+	// that does not admit the peer role (the orderer would reject the write-back
+	// broadcast even though endorsement succeeds).
+	warnedWriters map[string]struct{}
 }
 
 type pipeline struct {
@@ -92,6 +96,7 @@ func New(cfg *Config, peer PeerLedgers, channels ChannelIDLister, writeback send
 		pipelines:     map[string]*pipeline{},
 		warned:        map[string]struct{}{},
 		warnedNodeOUs: map[string]struct{}{},
+		warnedWriters: map[string]struct{}{},
 	}
 }
 
@@ -225,6 +230,9 @@ func (s *Service) startNewPipelines(ctx context.Context) {
 			// The mstscc write-back gate authorizes only peer-role identities;
 			// warn (once) if the write-back org lacks NodeOUs peer classification.
 			s.warnIfWritebackOrgLacksNodeOUs(channelID)
+			// A peer-role write-back must also satisfy the channel Writers policy
+			// or the orderer rejects the broadcast; warn (once) if it does not.
+			s.warnIfWritersRejectPeer(channelID)
 			if err := s.startPipeline(ctx, channelID, mstCfg); err != nil {
 				logger.Errorw("failed to start anchoring pipeline", "channel", channelID, "err", err)
 			}
@@ -337,6 +345,47 @@ func (s *Service) warnIfWritebackOrgLacksNodeOUs(channelID string) {
 	}
 	logger.Warnw("MST anchoring is enabled but some application org(s) lack NodeOUs peer classification; write-back signed by them will be rejected",
 		"channel", channelID, "orgsWithoutNodeOUs", strings.Join(missing, ","))
+}
+
+// warnIfWritersRejectPeer logs a loud (once-per-channel) warning when the
+// channel Writers policy would reject the peer-role write-back transaction at
+// the orderer. Endorsement can still succeed (the mstscc peer-role gate passes),
+// but the orderer evaluates the broadcast against Writers, and the default
+// NodeOUs Writers — OR('Org.admin','Org.client') — excludes the peer role,
+// producing a FORBIDDEN broadcast. The fix is to admit the peer role in the
+// anchoring org's Writers, e.g. OR('Org.admin','Org.client','Org.peer'). This
+// does not stop anchoring; the anchor still lands on MST.
+func (s *Service) warnIfWritersRejectPeer(channelID string) {
+	res := s.peer.GetChannelConfig(channelID)
+	if res == nil {
+		return
+	}
+	config := res.ConfigtxValidator().ConfigProto()
+	if config == nil {
+		return
+	}
+	rejecting, total := channelconfig.ApplicationOrgsWritersRejectingPeer(config)
+	if len(rejecting) == 0 || total == 0 {
+		return
+	}
+	s.mu.Lock()
+	_, seen := s.warnedWriters[channelID]
+	if !seen {
+		s.warnedWriters[channelID] = struct{}{}
+	}
+	s.mu.Unlock()
+	if seen {
+		return
+	}
+
+	wbMSPID := s.cfg.WriteBack.MSPID
+	if wbMSPID != "" && contains(rejecting, wbMSPID) {
+		logger.Warnw("MST anchoring is enabled but this peer's write-back org Writers policy does not admit the peer role; the orderer WILL reject write-back broadcasts (FORBIDDEN). Add the peer role to Writers, e.g. OR('Org.admin','Org.client','Org.peer')",
+			"channel", channelID, "writebackMSPID", wbMSPID)
+		return
+	}
+	logger.Warnw("MST anchoring is enabled but some application org(s) Writers policy does not admit the peer role; write-back signed by them is rejected by the orderer (FORBIDDEN)",
+		"channel", channelID, "orgsRejectingPeerInWriters", strings.Join(rejecting, ","))
 }
 
 func contains(list []string, v string) bool {

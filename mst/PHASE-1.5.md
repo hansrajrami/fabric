@@ -158,6 +158,21 @@ relayer therefore signs the write-back with the peer's own node identity
 > a loud startup warning when the peer's write-back org lacks it
 > (`ApplicationOrgsMissingPeerNodeOUs` in `common/channelconfig/nodeous.go`), so
 > the silent-rejection trap surfaces before it puzzles an operator.
+>
+> **Second precondition — the channel `Writers` policy must admit the peer role.**
+> The peer-role identity that passes the mstscc gate must *also* satisfy the
+> channel `Writers` policy, because the orderer evaluates the write-back broadcast
+> against it independently of endorsement. The default NodeOUs `Writers` is
+> `OR('Org.admin','Org.client')`, which **excludes** peer — so endorsement
+> succeeds but the orderer returns `FORBIDDEN` (`implicit policy evaluation failed
+> ... 'Writers'`). Admit the peer role in the anchoring org's `Writers`, e.g.
+> `OR('Org.admin','Org.client','Org.peer')` (or `OR('Org.member')`). This too is
+> **detected**: `peer mst preflight` reports orgs whose `Writers` rejects peer on
+> its `writers` line (WARN if some, FAIL if none), and the embedded service logs a
+> startup warning (`ApplicationOrgsWritersRejectingPeer` in
+> `common/channelconfig/writeback_policy.go`). The two gates pull in opposite
+> directions — the SCC wants *peer*, the orderer's default Writers wants
+> *admin/client* — so a working channel must widen `Writers` to include peer.
 
 **Trust model — attestation + pointer, verified off-ledger.** The stored record
 is an **attestation** by a peer-role identity plus a public **pointer**

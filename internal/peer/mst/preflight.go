@@ -41,6 +41,12 @@ type preflightInput struct {
 	// peer-role gate.
 	nodeOUsMissing []string
 	nodeOUsTotal   int
+	// writersRejectingPeer lists application orgs whose Writers policy does not
+	// admit the peer role; writersTotal is the number inspected. Write-back
+	// signed by such an org is endorsed but rejected by the orderer's Writers
+	// policy (FORBIDDEN), even when NodeOUs is correct.
+	writersRejectingPeer []string
+	writersTotal         int
 }
 
 // checkResult is one line of the preflight checklist.
@@ -113,6 +119,21 @@ func evaluatePreflight(in preflightInput) preflightResult {
 	default:
 		add("WARN", "nodeous", fmt.Sprintf("these org(s) lack NodeOUs peer classification: %s — write-back signed by them will be rejected", strings.Join(in.nodeOUsMissing, ", ")))
 	}
+
+	// Writers policy: the peer-role write-back transaction must also satisfy the
+	// channel Writers policy, or the orderer rejects the broadcast (FORBIDDEN)
+	// even when NodeOUs is correct. The default NodeOUs Writers excludes peer;
+	// report which application orgs' Writers do not admit the peer role.
+	switch n := len(in.writersRejectingPeer); {
+	case in.writersTotal == 0:
+		// No application orgs inspected — nothing to assert.
+	case n == 0:
+		add("PASS", "writers", fmt.Sprintf("all %d application org(s) admit the peer role in their Writers policy", in.writersTotal))
+	case n == in.writersTotal:
+		add("FAIL", "writers", fmt.Sprintf("no application org's Writers policy admits the peer role (%s) — the orderer will reject every write-back with FORBIDDEN; add the peer role to Writers, e.g. OR('Org.admin','Org.client','Org.peer')", strings.Join(in.writersRejectingPeer, ", ")))
+	default:
+		add("WARN", "writers", fmt.Sprintf("these org(s) do not admit the peer role in their Writers policy: %s — write-back signed by them is rejected by the orderer; add the peer role to their Writers", strings.Join(in.writersRejectingPeer, ", ")))
+	}
 	return r
 }
 
@@ -155,6 +176,7 @@ func preflightCmd(cryptoProvider bccsp.BCCSP) *cobra.Command {
 			in := preflightInput{channelID: channelID, cfg: mstCfg}
 			if mstCfg.Enabled {
 				in.nodeOUsMissing, in.nodeOUsTotal = channelconfig.ApplicationOrgsMissingPeerNodeOUs(config)
+				in.writersRejectingPeer, in.writersTotal = channelconfig.ApplicationOrgsWritersRejectingPeer(config)
 				cfg, err := evmConfigFor(mstCfg)
 				if err != nil {
 					return err
