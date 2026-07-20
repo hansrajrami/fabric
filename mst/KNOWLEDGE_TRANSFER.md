@@ -1,428 +1,319 @@
-# MST Integration — Phase 1 Knowledge Transfer
+# MST Integration — Phase 1.5 Knowledge Transfer
 
-**Audience:** a developer who has never seen this branch and needs to understand
-*what we built, why, and how the pieces fit* — well enough to read the diff, extend
-it, or operate it.
+**Audience:** a developer who knows the Phase 1 pipeline (or is new to the branch)
+and needs to understand *what Phase 1.5 changed, why, and how the pieces fit* —
+well enough to read the diff, extend it, or operate it.
 
-This is the **narrative** document. The others are references you'll reach for
-afterwards:
+This is the **narrative** document for the new approach. The references you'll
+reach for afterwards:
 
 | Doc | Read it for |
 |---|---|
-| **KNOWLEDGE_TRANSFER.md** (this) | the idea, the reasoning, the build order, what each file does |
+| **KNOWLEDGE_TRANSFER.md** (this) | the idea, the reasoning, what each new piece does |
+| [`PHASE-1.5.md`](PHASE-1.5.md) | the deep architecture: channel-config value, the SCC, per-channel EVM, gaps & trade-offs |
 | [`README.md`](README.md) | architecture summary + commitment spec + acceptance-criteria traceability |
-| [`SETUP.md`](SETUP.md) | how to deploy and operate it (both modes), step by step |
+| [`SETUP.md`](SETUP.md) | how to deploy and operate the new approach, step by step |
+| [`CLI.md`](CLI.md) | the `peer mst` operator command reference |
 | [`UPGRADING.md`](UPGRADING.md) | how to merge a newer Fabric release into this fork |
 | [`deploy/README.md`](deploy/README.md) | the hands-on local end-to-end demo walk |
 
-> Read sections 1–4 for the *idea*, section 5 as the *build-order walkthrough*, and
-> keep section 6 open as a *file map* while you browse the code.
+> Read sections 1–2 for the *unchanged foundation*, section 3 for *what Phase 1.5
+> changes and why* (the heart of this doc), sections 4–5 for the *new
+> decisions and file map*, and keep section 8 handy for the *gotchas*.
 
 ---
 
-## 1. The problem, in one paragraph
+## 1. The problem, unchanged
 
-Hyperledger Fabric is a **private, permissioned** ledger — great for confidentiality,
-but a counterparty (auditor, regulator, another consortium) generally cannot
-independently verify that a given transaction happened, exactly as claimed, at a
-given time, without being given trusted access to the Fabric network. We want the
-best of both: keep the data private in Fabric, but publish a **tamper-evident,
+Hyperledger Fabric is a **private, permissioned** ledger. A counterparty (auditor,
+regulator, another consortium) generally cannot independently verify that a given
+transaction happened, exactly as claimed, at a given time, without trusted access
+to the network. We keep the data private in Fabric but publish a **tamper-evident,
 publicly verifiable fingerprint** of each relevant transaction onto a public
-EVM-compatible chain ("MST"). Anyone later holding the original transaction data can
-recompute that fingerprint and check it against the public chain — no trust in us
-required.
+EVM-compatible chain ("MST"). Anyone later holding the original data recomputes the
+fingerprint and checks it against the public chain — no trust in us required.
 
-## 2. The core idea (the "thought process")
+## 2. The unchanged foundation (still load-bearing)
 
-Four insights drove every design decision. If you internalise these, the code reads
-itself:
+These four insights from Phase 1 still drive everything. Phase 1.5 does **not**
+touch them:
 
-1. **Only a hash travels, never business data.** For each opted-in transaction we
-   compute a 32-byte `keccak256` **commitment** over a fixed tuple (tx id, channel,
-   chaincode, block, timestamp, and a hash of the declared business fields). That
-   single hash is what we anchor publicly. The raw values never leave Fabric, so
-   anchoring is privacy-safe by construction and the on-chain footprint is constant.
+1. **Only a hash travels, never business data.** Each opted-in transaction yields a
+   32-byte `keccak256` **commitment** over a fixed tuple (tx id, channel, chaincode,
+   block, timestamp, and a hash of the declared fields). Only that hash is anchored.
+2. **The commitment is byte-for-byte reproducible by anyone**, guarded by a
+   **cross-language test gate** (Go ≡ TypeScript ≡ Solidity, in CI).
+3. **Never touch Fabric's commit path.** Only already-committed blocks are read, and
+   every slow/fallible step (EVM submit, confirmations, write-back) runs
+   asynchronously behind a durable queue.
+4. **Exactly-once in effect** = durability (crash-safe outbox with an atomic
+   checkpoint) + idempotency (the contract records each key once; a repeat is a
+   quiet no-op).
 
-2. **The commitment must be byte-for-byte reproducible by anyone.** A proof is
-   worthless if two honest implementations compute different hashes for the same
-   data. So the encoding is *canonical* (deterministic, no ambiguity) and is guarded
-   by a **cross-language test gate**: Go, TypeScript, and Solidity must agree on
-   every byte, in CI, forever.
+The capture → outbox → sender **spine is identical** to Phase 1. Phase 1.5 changes
+the three surfaces *around* that spine. If you know Phase 1, you already know 80% of
+this branch — read section 3 for the other 20%.
 
-3. **Never touch Fabric's commit path.** The anchoring pipeline must never slow,
-   block, or endanger Fabric consensus/commit. We achieve this *structurally*: we
-   only ever read **already-committed** blocks, and every slow/fallible thing (EVM
-   submission, confirmations, write-back) happens **asynchronously behind a durable
-   queue**. A relayer crash or an MST outage can never hurt Fabric.
+## 3. What Phase 1.5 changes, and why (the heart of it)
 
-4. **Exactly-once, despite an unreliable world.** Blocks get redelivered, processes
-   crash, RPCs time out, multiple peers see the same block. We get exactly-once *in
-   effect* by combining two cheap guarantees:
-   **durability** (a crash-safe outbox with an atomic checkpoint → nothing is ever
-   lost) **+ idempotency** (the on-chain contract records each key once; a repeat is
-   a quiet no-op → nothing is ever duplicated). Neither alone is enough; together
-   they are.
+Phase 1 anchored to **one shared** contract, was enabled **per peer** via
+`core.yaml`, and wrote back through a **user chaincode**. That works, but anchoring
+was a *per-peer operational choice*, not a property the whole channel agreed on.
+Phase 1.5 makes anchoring a **first-class, channel-governed** property by changing
+exactly three surfaces:
 
-Everything else — sidecar vs embedded, LevelDB vs CouchDB, single vs Merkle
-batching — is an *option* layered on this spine without disturbing it.
+### 3a. Per-channel contracts (isolation)
+Each channel anchors to its **own** deployed `MSTAnchor` contract, so channels'
+anchor histories are isolated on the MST chain. The embedded service keeps **one**
+`evm.Client` (one relayer account, one serialized nonce sequence) and creates an
+`evm.Binding` per channel that pins that channel's contract address — so N
+per-channel contracts don't cause the head-of-line nonce collisions that N
+independent clients on one account would.
 
-## 3. Mental model
+### 3b. Channel-config governance (all orgs agree)
+Whether a channel anchors — and *how* — is a **channel configuration** value, agreed
+by all orgs through the Application group's modification policy, not a per-peer flag:
+
+- The `MSTAnchor` value lives in the Application group (`common/channelconfig/mstanchor.go`),
+  carried as JSON inside a `structpb.Value` (a deliberately additive encoding that
+  avoids adding a message to the `fabric-protos` module).
+- It holds `Enabled`/`ContractAddress`/`ChainID` **plus** the anchoring *policy* that
+  must be uniform across peers: `CaptureMode`, `Include`/`ExcludeChaincodes`,
+  `BatchStrategy`, `Confirmations`, and `Cadence*`. Per-peer divergence on *what/how/
+  where* to anchor would produce ambiguous anchoring the idempotent contract can't
+  reconcile — so these are channel-governed, each falling back to a fixed built-in
+  default (never to `core.yaml`). `core.yaml` keeps only peer-local plumbing (RPC
+  URL, relayer key, outbox path, workers, gas tuning).
+- **Capability-gated.** The `MSTAnchor` value may appear only when the channel enables
+  the **`V2_5_MSTANCHOR` application capability** (`common/capabilities/application.go`).
+  This is the Fabric-native way to express "every node must run the MST-enabled
+  binary": a vanilla binary doesn't report the capability, so it **cleanly refuses to
+  join** the channel rather than choking on the unknown value or silently failing to
+  endorse — turning "all peers must be patched" into an explicit, safe upgrade gate.
+- `configtxgen` encodes it (`internal/configtxgen/encoder`); turning anchoring on/off
+  later is an ordinary channel-config update under the Application mod policy.
+
+### 3c. Anchor status as a ledger fact via a system chaincode
+The write-back target is a **built-in system chaincode** (`mstscc`,
+`core/scc/mstscc/`), not a user chaincode:
+
+- **Peer-gated:** deployed only where `chaincode.system.mstscc` is enabled in
+  `core.yaml` (the peer opting in / running the MST-enabled binary).
+- **Channel-gated:** every invoke is rejected unless the channel's `MSTAnchorConfig`
+  has anchoring enabled — so the SCC is inert on channels that never turned it on.
+- **Peer-role authorization:** `RecordAnchor` requires a **peer-role identity**
+  (NodeOUs) — only a peer *node's* signing identity may write anchor status, not a
+  client/user cert. The SCC evaluates the tx creator against an `MSPRole{PEER}`
+  principal using the channel MSP (`defaultRequirePeer`), so it honors NodeOUs and
+  fails closed if NodeOUs are off. Reads (`QueryAnchorStatus`, `IsAnchored`,
+  `ListAnchors`, `CountAnchors`) are open.
+- **Echo-loop safe:** `mstscc` never calls `SetEvent`, and its name is always added
+  to the capture service's excluded set, so a write-back can never re-enter the
+  pipeline.
+
+Because the SCC record is consensus-backed, every org can authoritatively query it.
+But it is an **attestation + pointer**, not a proof: a Fabric SCC cannot read EVM
+state, so `status: CONFIRMED` means "a peer node asserts this," not "verified
+on-chain." Independent truth is still established off-ledger with `peer mst verify`.
+
+### 3d. The knock-on additions
+Making anchoring channel-governed pulled in four supporting pieces:
+
+- **Upgradeable contract.** `MSTAnchor` is deployed behind an OpenZeppelin
+  **TransparentUpgradeableProxy**, so a channel's contract address is **stable across
+  implementation upgrades** — a same-chain fix no longer forces a new address that
+  would split anchor history. Trade-off: the ProxyAdmin (deployer key by default) can
+  upgrade the logic and thereby alter recorded anchors, so on-chain immutability is
+  now *conditional on no malicious upgrade* — use a timelock+multisig admin in
+  production (see [`anchor-contracts/README.md`](anchor-contracts/README.md)).
+- **Live reconfiguration.** The embedded service's discovery loop reconciles each
+  channel's running pipeline with its current config every tick: a governed-field
+  change **hot-reloads** the channel's pipeline (stop + restart with the new config),
+  and disabling MST **stops** it. Safe because the outbox is durable and capture
+  resumes from its checkpoint.
+- **Config validation + preflight.** `channelconfig` rejects a malformed/zero contract
+  address and inconsistent cadence at config-apply time; `peer mst preflight` checks
+  the config against the live chain (node reachable, chain-id match, contract
+  deployed + ABI-compatible, MSP NodeOUs) *before* an operator applies an update.
+- **Operator CLI.** `peer mst …` wraps the common tasks (see [`CLI.md`](CLI.md)).
+
+### 3e. Embedded-only
+Phase 1.5 is **embedded-only**: a sidecar cannot run a built-in system chaincode or
+honor channel-config governance. The Phase 1 sidecar (`mst-relayd`) remains supported
+for the legacy shared-contract / user-chaincode flow, but the new path lives in the
+peer.
+
+## 4. Mental model (new approach)
 
 ```
- Business chaincode                     (opts in per tx: proofhelper.Emit → MSTProofRequest event)
-        │  block commits on Fabric (final; nothing anchored yet)
+ channel config  (Application group value "MSTAnchor", all-org agreed, capability-gated)
+   ├─ enabled, contractAddress (this channel's OWN proxy), chainID
+   └─ captureMode / batchStrategy / confirmations / cadence  (governed policy)
+        │  read at runtime by the peer; changes hot-reload the pipeline
         ▼
- CAPTURE  ──►  OUTBOX  ──►  SENDER  ──►  [MST] MSTAnchor contract
- (reads committed  (durable, crash-   (cadence, retries,   (idempotent, immutable
-  blocks; builds    safe; atomic       confirmations,       per key; emits event)
-  commitment)       entry+checkpoint)  batching)                │
-                                                                ▼
-                                          WRITE-BACK ──► [Fabric] mst-anchor-status chaincode
-                                          (records "tx X is anchored" on Fabric's own ledger)
+ Business chaincode ── proofhelper.Emit("MSTProofRequest", …)   (opt-in, unchanged)
+        │  block commits
+        ▼
+ CAPTURE ─► OUTBOX (per channel) ─► SENDER ─► [MST] this channel's MSTAnchor proxy
+   (unchanged spine; evm.Binding pins the per-channel address onto ONE shared
+    relayer account / nonce sequence)
+        │  Anchored
+        ▼
+ WRITE-BACK ─► [Fabric] mstscc.RecordAnchor   (built-in system chaincode)
+   • only a PEER-role identity may submit     • rejected unless the channel enabled MST
+   • never emits events (echo-safe)           • consensus-backed ledger fact
 ```
 
-Each outbox entry moves through a state machine, and the sender only ever advances
-it one atomic step at a time (compare-and-set), so a crash resumes cleanly:
+## 5. New / changed files (the map)
 
-```
-PENDING ──submit──► SUBMITTED ──confirmations──► CONFIRMED ──write-back──► WRITTEN_BACK ──► DONE
-   ▲                    │  (failure/timeout re-queues)
-   └────────────────────┘
-```
+Everything under `mst/canonical`, `mst/relay/{capture,outbox,sender,evm}`,
+`mst/fabric-chaincode/proofhelper`, and the commitment/vector gate is **unchanged
+from Phase 1** — see the Phase 1 file map if you need it. Phase 1.5 adds/changes:
 
-**Why this is exactly-once:** the outbox `PutBlock` writes a block's new entries
-*and* advances the "last processed block" checkpoint in **one atomic, fsync'd
-batch** — so a crash can never skip a block or double-insert one (durability). And
-the contract stores each `fabric_tx_id` (or batch root) exactly once — a resubmit is
-a quiet no-op (idempotency). At-least-once delivery therefore becomes exactly-once
-*in effect*.
+### Channel-config value + capability (`common/`)
+- `common/channelconfig/mstanchor.go` — the `MSTAnchorConfig` type, validation
+  (enum + duration + zero-address + cadence-consistency checks), and `MSTAnchorValue`.
+- `common/channelconfig/application.go`, `api.go` — one `ApplicationProtos` field, a
+  capability-gated parse block, and the `MSTAnchorConfig()` accessor on the
+  `Application` interface.
+- `common/channelconfig/nodeous.go` — `ApplicationOrgsMissingPeerNodeOUs` (detects the
+  NodeOUs precondition from the raw config).
+- `common/capabilities/application.go`, `common/channelconfig/api.go` — the
+  `V2_5_MSTANCHOR` capability + the `MSTAnchor()` capability method.
 
-## 4. Load-bearing design decisions (the "why" behind the code)
+### System chaincode (`core/scc/mstscc/`)
+- `mstscc.go` — `RecordAnchor` / `QueryAnchorStatus` / `IsAnchored` / `ListAnchors` /
+  `CountAnchors`; the channel-enablement gate; `defaultRequirePeer` (peer-role gate);
+  the injectable `requirePeer` / `WithPeerAuthorizer` seam. Registered in
+  `internal/peer/node/start.go` `builtinSCCs`.
 
-**(a) Canonical encoding + commitment + 3-way gate.** `mst/canonical` encodes the
-declared payload deterministically (fields sorted by raw UTF-8 name bytes,
-length-prefixed, type-tagged; floats/nesting/duplicates/non-NFC strings *rejected*,
-never silently coerced) and hashes the fixed tuple with hand-rolled EVM ABI encoding
-+ keccak256. Three independent implementations (Go, TypeScript via ethers, Solidity
-via the contract's own `abi.encode`) must produce identical bytes for every vector
-in `mst/testvectors/vectors.json`, enforced in CI. This is the single most important
-correctness asset — build/verify it first.
+### Config tooling
+- `internal/configtxgen/genesisconfig/config.go`, `encoder/encoder.go` — the
+  `MSTAnchor` profile struct + encode block (rejects the value without the capability).
+- `sampleconfig/configtx.yaml` — the commented `MSTAnchor` example + the capability.
+- `sampleconfig/core.yaml` — `chaincode.system.mstscc` peer opt-in.
 
-**(b) Timestamp = the transaction's `ChannelHeader.Timestamp`.** Fabric *block*
-headers carry no timestamp, and wall-clock commit time isn't recoverable from the
-ledger. The only deterministic, verifier-recomputable time is the client-asserted
-timestamp inside the signed transaction envelope — so that's what the commitment
-uses. (This is a documented clarification of the original spec.)
+### Per-channel EVM + embedded service
+- `mst/relay/evm/client.go` — `Binding` (per-contract address), `Client.ChainID()`,
+  `SetRelayer`.
+- `internal/pkg/mstanchor/service.go` — per-channel pipeline lifecycle with
+  **hot-reload** (`planPipelineAction`, `pipelineFingerprint`, `stopPipeline`), the
+  ChainID/allowlist/NodeOUs startup warnings, per-pipeline cancellation.
+- `internal/pkg/mstanchor/config.go` — reads only peer-local knobs; `CaptureConfigFor`/
+  `SenderConfigFor` build from the channel config.
+- `internal/peer/node/mst.go` — write-back wired to the SCC via the in-process gateway.
 
-**(c) Two deployment modes, and the proto-module split that shapes the code.** The
-pipeline ships as a **sidecar daemon** (`mst-relayd`, talks to a peer over the
-Gateway API — works against an unpatched upstream peer) *and* **embedded in the peer
-binary** (behind a `core.yaml` flag, default off). The catch: the peer links the old
-`fabric-protos-go`, while the Gateway client links `fabric-protos-go-apiv2`, and the
-two register the same proto file paths — linking both into one binary panics at
-init. So the *capture core, outbox, and sender are proto-free* (they consume
-`mst/relay/txmodel`), and each world has a thin proto adapter: `mst/relay/blockparse`
-(apiv2, sidecar) and `internal/pkg/mstanchor/parse.go` (old protos, in-peer). **Never
-import `mst/relay/gwsource` into peer-linked code, and never import
-`github.com/hyperledger/fabric` into the relay module.**
+### Operator CLI (`internal/peer/mst/`)
+- `mst.go` (shared setup), `query.go`, `config.go` (channel-config / onchain),
+  `preflight.go`, `verify.go`, `pipeline.go`, `relayer.go` — the `peer mst` group.
 
-**(d) The outbox is the relayer's OWN store, never the peer's ledger.** Putting relay
-bookkeeping on the Fabric ledger would drag the relay back onto the commit path
-(every status flip = a consensus tx) — exactly what insight #3 forbids. And the
-peer's own LevelDB is single-process-locked. So the relayer keeps a private
-embedded LevelDB, *or* — when the peer runs CouchDB — its own dedicated
-`mst_outbox_<channel>` databases on the same CouchDB server (never the peer's state
-DBs). The backend hides behind one `Store` interface; correctness is identical (see
-`couchdb.go`'s "write ordering + idempotency" note where atomic batches aren't
-available).
+### Upgradeable contract (`mst/anchor-contracts/`)
+- `contracts/MSTAnchor.sol` — now `Initializable` (constructor → `initialize`,
+  `allowlistEnabled` in storage, `_disableInitializers`, `__gap`).
+- `contracts/proxy/Proxies.sol` — re-exports OZ's `TransparentUpgradeableProxy` so its
+  bytecode compiles (for the Go deploy path).
+- `scripts/deploy.ts` (deploys the proxy), `scripts/upgrade.ts` (in-place upgrade
+  runbook), `abi/TransparentUpgradeableProxy.json`, `README.md`.
 
-**(e) Capture modes: `opt-in` vs `all`.** By default only transactions that emit the
-`MSTProofRequest` event are anchored (the chaincode opts in per tx and declares which
-fields the proof covers). `all` anchors *every* valid transaction — opted-in ones
-keep their declared payload; the rest get the well-known *empty-payload* commitment
-(an existence-and-timing proof). System/write-back chaincodes are always excluded
-(the echo-loop guard becomes load-bearing here).
+## 6. Deployment modes, side by side
 
-**(f) Batching: `individual` vs `merkle` — and where the "combined proof" lives.**
-`individual` keeps one on-chain record per tx but shares one EVM transaction for a
-flush (~40% gas saving; verification unchanged). `merkle` anchors only the **Merkle
-root** over the flush's commitments (~95% saving); verifying one tx then needs its
-**inclusion proof** (the ~log₂N sibling hashes), exported from the outbox by
-`mst-proof` and checked by `mst-verify --batch-proof`. Batch membership is persisted
-*before* submission so proofs survive a crash. The tree is OpenZeppelin-compatible
-(sorted leaves, sorted-pair keccak) so a future on-chain verifier can use the audited
-library.
-
-**(g) Cadence is orthogonal to strategy.** *When* to flush — `per-tx`, `batch` of N,
-`interval`, or `cron` (5-field expression) — is independent of *how* (individual /
-merkle). High-volume audit trails typically pair `all` + `merkle` + `cron`.
-
-**(h) Gas-balance monitoring.** The relayer's EVM account pays gas; if it empties,
-anchoring stalls *safely* (entries queue) but *silently*. A metrics gauge
-(`mst_relayer_balance_gwei`) plus an optional low-balance watcher make that visible.
-
-## 5. Build walkthrough — step by step, in order
-
-The 20 commits map to 17 logical steps (plus 3 fix commits). This is the order to
-read the branch; each step builds on the last. `git log --oneline
-origin/release-2.5..HEAD` shows them 1:1.
-
-**Step 1 — Anchor contract** (`mst/anchor-contracts/`). The public record, built
-first so everything else has a target. `MSTAnchor.sol`: `anchor(txId, commitment,
-blockNumber)` idempotent (duplicate = quiet no-op), immutable per key, self-stamped
-`block.timestamp`, optional relayer allowlist. Hardhat tests + deploy script; ABI
-exported to `abi/MSTAnchor.json` (Go tests read it to catch selector drift).
-
-**Step 2 — Canonical encoding + commitment + cross-language gate** (`mst/canonical/`,
-`mst/testvectors/`). The load-bearing correctness piece (decision *a*). `encode.go`,
-`decode.go` (strict — re-encode must equal input), `commitment.go` (ABI tuple +
-keccak), `keccak.go`; `vectors.json` with golden values; the TypeScript reference in
-`testvectors/reference-ts`; the Solidity spot-check `CommitmentCheck.sol`. **Do not
-proceed past a red gate.** This unblocks everyone.
-
-**Step 3 — Opt-in helper + example chaincode** (`mst/fabric-chaincode/proofhelper`,
-`.../example-chaincode`). `proofhelper.New().Add…().Emit(stub)` validates at
-endorsement time and emits the `MSTProofRequest` event whose payload *is* the
-canonical encoding (one format end to end). The example chaincode shows the pattern.
-
-**Step 4 — Durable outbox** (`mst/relay/outbox/`, starts the `mst/relay` module).
-The crash-safe queue (decision *d*). `entry.go` (the record + state machine),
-`store.go` (`Store` interface + LevelDB impl with the atomic entry+checkpoint
-batch), `quarantine.go`. This is the backbone of exactly-once.
-
-**Step 5 — Capture service** (`mst/relay/blockparse`, `.../capture`,
-`.../internal/blocktest`). Turns committed blocks into outbox entries, strictly
-post-commit. `blockparse` extracts tx facts; `capture` filters (valid txs,
-`MSTProofRequest`, echo-loop exclusion), builds commitments, quarantines poison
-pills, writes one atomic batch per block. Tested entirely on synthetic block protos —
-no live Fabric needed.
-
-**Step 6 — Relayer/sender + EVM client** (`mst/relay/evm`, `.../sender`, `cmd/mst-relayd`).
-Drains the outbox to MST. `evm/` (ethclient wrapper, hand-packed calldata, EIP-1559,
-nonce mgmt, confirmations); `sender/` (cadence, bounded workers, backoff, pre-submit
-`getAnchor` short-circuit, crash recovery). Fake-EVM unit tests + a live hardhat
-integration test.
-
-**Step 7 — Anchor-status chaincode + write-back** (`mst/fabric-chaincode/anchor-status`,
-`mst/relay/fabricwb`). The Fabric-side acknowledgment: `RecordAnchor` (idempotent,
-MSP-gated, **never emits events** → can't echo-loop). `fabricwb` submits it via the
-Gateway.
-
-**Step 8 — Verification tool** (`mst/relay/verifylib`, `cmd/mst-verify`). Recompute
-the commitment from original data, read the anchor, print MATCH/NO-MATCH. This is the
-whole point made runnable; demonstrated live (MATCH on good data, NO-MATCH after
-tampering one field).
-
-**Step 9 — CI + deploy + docs.** `.github/workflows/mst.yml` (Go + TS + Hardhat + the
-cross-language gate as required jobs), `mst/deploy/` (compose + example config),
-`mst/README.md` with the acceptance-criteria table.
-
-**Step 10 — Proto-free refactor** (`mst/relay/txmodel`, move gateway code to
-`mst/relay/gwsource`). Preparation for embedding: the capture core stops importing
-apiv2 protos and consumes the proto-free `txmodel` instead (decision *c*). No
-behaviour change; this is the pivot that makes step 11 possible.
-
-**Steps 11–12 — Embed into the peer** (`internal/pkg/mstanchor/*`,
-`internal/peer/node/mst.go`, one hook in `internal/peer/node/start.go`,
-`sampleconfig/core.yaml`, `go.mod`). The same capture/outbox/sender now runs inside
-`peer node start` behind `mst.enabled` (default off → vanilla peer). Blocks come from
-the peer's own ledger (`source.go` + `parse.go`, old protos); write-back
-(`writeback.go`) calls the peer's own gateway server **in-process** (no network hop),
-signed with a configured relayer MSP identity (low-S ECDSA). The only pre-existing
-Fabric file touched is `start.go` (+18/-2).
-
-**Step 13 — Docs + CI for embedded mode.** README deployment-mode comparison; a CI
-job that builds the patched peer and runs `peer version` to prove there's no
-proto-registration panic. (`UPGRADING.md` — the merge playbook — was added just
-after.)
-
-**Step 14 — CouchDB outbox, auto-following the peer's stateDatabase**
-(`mst/relay/outbox/couchdb.go`, config in both modes). A second `Store`
-implementation on plain `net/http`; the embedded mode picks LevelDB or CouchDB to
-match `ledger.state.stateDatabase`. A backend-agnostic contract-test suite runs
-against LevelDB, an in-process fake CouchDB, and (in CI) a real `couchdb:3`.
-
-**Step 15 — Gas-balance monitoring** (`mst/relay/sender/balance.go`, `metrics.go`).
-Decision *h*: gauge + low-balance watcher, wired into both modes.
-
-**Step 16 — Anchor-all capture mode** (`capture.go` + both parsers surface the
-invoked chaincode id). Decision *e*: `captureMode: all` anchors every valid tx, with
-`includeChaincodes` scoping and system-chaincode exclusion.
-
-**Step 17 — Configurable batching + cron** (`mst/canonical/merkle.go`, contract
-`anchorRoot`/`getRoot`, `mst/relay/sender/batch.go`, `cadence.go`, `cmd/mst-proof`,
-`verifylib` batch verdicts). Decisions *f* and *g*: individual/anchorBatch and merkle
-roots with inclusion proofs; cron cadence. This is the largest single step.
-
-*(Fix commits: dropped an accidentally committed chaincode binary; removed a
-`mst/relay/vendor` directory a stray `go mod vendor` created — twice — now
-`.gitignore`d; fixed gofumpt formatting for Fabric's lint.)*
-
-## 6. File-by-file reference (the map)
-
-### `mst/canonical/` — the shared correctness core (own Go module; deps: x/crypto, x/text)
-- `canonical.go` — field types, the `Payload`/`Field` model, validation.
-- `encode.go` / `decode.go` — canonical serialization; `decode` is strict (accepts
-  only canonical bytes).
-- `commitment.go` — the 8-field tuple, ABI encoding, `keccak256`, `domain_tag`,
-  `schema_version`.
-- `keccak.go` — legacy keccak256 (the EVM's, not NIST SHA3).
-- `merkle.go` — batch root + inclusion proof (OpenZeppelin-compatible).
-
-### `mst/testvectors/` — the cross-language gate
-- `vectors.json` — golden encodings/hashes (regenerate only with a `schema_version`
-  bump: `go test ./mst/canonical -run TestVectors -update`).
-- `reference-ts/` — the independent TypeScript implementation (ethers v6).
-
-### `mst/anchor-contracts/` — the on-chain record (Hardhat)
-- `contracts/MSTAnchor.sol` — `anchor`, `anchorBatch`, `anchorRoot`, `getAnchor`,
-  `getRoot`; idempotent, immutable per key, optional allowlist.
-- `contracts/test/CommitmentCheck.sol` — Solidity leg of the vector gate.
-- `abi/MSTAnchor.json` — checked-in ABI the Go tests verify selectors against.
-- `scripts/deploy.ts`, `hardhat.config.ts` — deploy + solc pinned via npm (proxy-friendly).
-
-### `mst/fabric-chaincode/` — chaincode artifacts (own Go modules)
-- `proofhelper/proofhelper.go` — the opt-in builder + `Emit`.
-- `example-chaincode/` — demo business chaincode using it.
-- `anchor-status/contract.go` — the write-back target (idempotent, MSP-gated,
-  non-anchorable).
-
-### `mst/relay/` — the pipeline (own Go module)
-- `txmodel/txmodel.go` — **proto-free** Tx/Event/Block; the boundary both worlds share.
-- `blockparse/blockparse.go` — apiv2 → txmodel (sidecar parser).
-- `gwsource/gwsource.go` — Gateway block-event source (**sidecar-only**; never
-  peer-linked).
-- `capture/capture.go` — the proto-free capture core (opt-in/all modes, quarantine,
-  atomic write).
-- `outbox/` — `entry.go` (record + state machine), `store.go` (`Store` + LevelDB),
-  `couchdb.go` (CouchDB), `quarantine.go`.
-- `evm/` — `client.go` (ethclient wrapper), `calldata.go` (hand-packed calls +
-  selector tests).
-- `sender/` — `sender.go` (drain loop, recovery), `batch.go` (individual/merkle),
-  `cadence.go` (per-tx/batch/interval/cron), `backoff.go`, `balance.go`,
-  `metrics.go`, `writeback.go` (interface + no-op).
-- `fabricwb/` — Gateway write-back client (sidecar).
-- `verifylib/verifylib.go` — recompute + compare; single-anchor and batch verdicts.
-- `config/config.go` — the sidecar JSON config.
-- `cmd/mst-relayd` (daemon), `cmd/mst-verify` (verify), `cmd/mst-proof` (export
-  inclusion proof).
-- `internal/blocktest/` — synthetic block builder for tests.
-
-### Fabric-tree changes (the embedded mode + wiring)
-- `internal/pkg/mstanchor/config.go` — reads the `core.yaml` `mst:` section;
-  auto-follows `stateDatabase`; validates.
-- `internal/pkg/mstanchor/parse.go` — old-proto → txmodel (in-peer parser).
-- `internal/pkg/mstanchor/source.go` — ledger blocks-iterator source.
-- `internal/pkg/mstanchor/service.go` — per-channel pipeline lifecycle + metrics.
-- `internal/pkg/mstanchor/writeback.go` — in-process gateway write-back + identity signer.
-- `internal/peer/node/mst.go` — the start/stop glue; `mstGatewayServer` handoff.
-- `internal/peer/node/start.go` — **the only pre-existing file changed** (+18/-2): one
-  hook in `serve()`.
-- `sampleconfig/core.yaml` — the commented `mst:` config reference.
-- `.github/workflows/mst.yml` — the whole CI matrix.
-- `go.mod` / `go.sum` / `vendor/` — the mst modules added via local `replace`; the
-  fabric module vendors the relay packages it needs.
-
-## 7. The two deployment modes, side by side
-
-| | **Sidecar** (`mst-relayd`) | **Embedded** (in the peer) |
+| | **Phase 1 sidecar** (`mst-relayd`) | **Phase 1.5 embedded** (this doc) |
 |---|---|---|
-| Enable | run the daemon | `mst.enabled: true` in core.yaml (default false) |
-| Block source | Gateway `BlockEvents` (`gwsource`, apiv2) | peer ledger iterator (`mstanchor/source.go`, old protos) |
-| Config | `mst-relayd.json` (`relay/config`) | `core.yaml` `mst:` (`internal/pkg/mstanchor/config.go`) |
-| Write-back | Gateway client (`fabricwb`) | peer's own gateway, in-process (`mstanchor/writeback.go`) |
-| Works against upstream peer | yes | no (needs this fork's binary) |
-| Fault isolation | full (separate process) | shares the peer process |
+| Enable | run the daemon | channel-config `MSTAnchor` value + `V2_5_MSTANCHOR` capability + `chaincode.system.mstscc` |
+| Governance | per-peer JSON config | all-org channel-config value |
+| Contract | one shared contract | one per channel (behind a proxy) |
+| Write-back | `mst-anchor-status` **user** chaincode via Gateway | `mstscc` **system** chaincode, peer-role gated |
+| Config changes | restart the daemon | hot-reloaded live |
+| Works against upstream peer | yes | no (needs this fork's binary + the capability) |
 
-Both drive the *same* `capture` + `outbox` + `sender`. The embedded mode is glued in
-by exactly one hook in `internal/peer/node/start.go` (capture the gateway server
-handle into `mstGatewayServer`, start/stop the service around the signal handlers).
+Both drive the *same* `capture` + `outbox` + `sender`.
 
-## 8. Build, run, test, verify
+## 7. Build, run, test, verify
 
 ```bash
-# Go core + relay (per module)
-(cd mst/canonical && go test ./...)
-(cd mst/relay && go vet ./... && go test -race ./...)
-
-# Cross-language gate
+# Contract (now behind a proxy) + cross-language gate
+(cd mst/anchor-contracts && npm install && npm run build && npx hardhat test)  # incl. the upgrade test
 (cd mst/testvectors/reference-ts && npm install && npm test)
-(cd mst/anchor-contracts && npm install && npx hardhat test)
 
-# Live EVM integration (spawns nothing; point at a running node)
-(cd mst/anchor-contracts && npx hardhat node &)          # terminal 1
+# Live EVM integration (deploys impl + proxy; point at a running node)
+(cd mst/anchor-contracts && npx hardhat node &)                                  # terminal 1
 (cd mst/relay && MST_EVM_RPC=http://127.0.0.1:8545 go test -run TestIntegration ./evm/)
 
-# Embedded peer: build + prove no proto-registration panic
-go build -o /tmp/peer ./cmd/peer && /tmp/peer version
-go test ./internal/pkg/mstanchor/... ./internal/peer/node/...
+# Fabric-side unit tests for the new surfaces
+go test ./common/channelconfig/ ./common/capabilities/ ./core/scc/mstscc/ \
+        ./internal/pkg/mstanchor/ ./internal/peer/mst/ ./internal/configtxgen/...
 
-# Fabric's own lint — use the PINNED tools, not @latest (see gotchas)
-(cd tools && GOFLAGS=-mod=mod go install mvdan.cc/gofumpt golang.org/x/tools/cmd/goimports honnef.co/go/tools/cmd/staticcheck)
+# Build the peer + prove no proto-registration panic
+go build -o /tmp/peer ./cmd/peer && /tmp/peer version
+
+# Fabric's own lint — PINNED tools (see gotchas)
 PATH=$(go env GOPATH)/bin:$PATH ./scripts/golinter.sh
 ```
 
-To *operate* it (deploy contract/chaincode, configure, verify a real tx), follow
-[`SETUP.md`](SETUP.md).
+To *operate* it (deploy the proxy, set the channel config + capability, opt the peer
+into `mstscc`, verify a real tx), follow [`SETUP.md`](SETUP.md) and
+[`deploy/README.md`](deploy/README.md).
 
-## 9. Gotchas a newcomer will hit
+## 8. Gotchas a newcomer will hit (new approach)
 
-- **The two-proto rule.** `mst/relay/gwsource` (apiv2) must never be imported by
-  peer-linked code, and `github.com/hyperledger/fabric` (old protos) must never be
-  imported by the relay module — linking both proto modules panics at init. Anything
-  shared goes through the proto-free `txmodel`.
-- **The `go mod vendor` trap.** Running `go mod vendor` from `mst/relay` creates a
-  34 MB `mst/relay/vendor/` that must NOT be committed (the relay module resolves
-  from the cache; only the fabric root vendors). It's now `.gitignore`d — but it bit
-  us twice, so don't un-ignore it.
-- **Lint uses pinned tools.** Fabric's CI runs `gofumpt v0.1.0` (from `tools/go.mod`),
-  which is *older/looser* than `@latest`. Format with the pinned version or you'll
-  "fix" dozens of upstream files wrongly.
-- **`MST_RELAYER_KEY` is env-only.** The relayer's EVM private key is never in any
-  config file, by design. Both modes read it from the environment.
-- **One log line needs a human:** `anchor exists with mismatched commitment`. It
-  means an on-chain anchor disagrees with local capture; it is deliberately never
-  retried (retrying can't fix it) and must be investigated.
-- **Vectors are frozen.** Changing any expected value in `vectors.json` is a
-  breaking change — only do it with a `schema_version` bump; otherwise old proofs
-  stop verifying.
-- **Merkle mode wants a batching cadence.** `merkle` with `per-tx` cadence makes
-  single-leaf "batches" (works — root = leaf — but wastes the aggregation). Pair it
-  with `batch`/`interval`/`cron`.
+- **The two-proto rule still holds.** `mst/relay/gwsource` (apiv2) must never be
+  imported by peer-linked code; `github.com/hyperledger/fabric` (old protos) must
+  never be imported by the relay module. Anything shared goes through `txmodel`.
+- **The `MSTAnchor` value needs the `V2_5_MSTANCHOR` capability.** `channelconfig` and
+  `configtxgen` both reject the value without it; enable the capability only once
+  every peer on the channel runs the MST binary.
+- **NodeOUs is a hard precondition.** The peer-role write-back gate fails *closed*
+  without NodeOUs enabled on the channel MSPs — write-backs are silently rejected.
+  `peer mst preflight` and a startup warning surface this; `mst.writeback.*` must be
+  the peer's own node signcert, not a client cert.
+- **The proxy admin is the trust cost.** With the default deployer-key ProxyAdmin, a
+  single key can upgrade the implementation and rewrite anchors. Use a
+  timelock+multisig admin for anything real.
+- **Re-vendor after non-test `mst/relay/evm` source changes.** The fabric root vendors
+  the relay packages; changing `client.go`/`calldata.go` needs `go mod vendor` to
+  re-sync (test files are not vendored).
+- **Refresh `abi/` after contract changes.** `npm run build` regenerates
+  `abi/MSTAnchor.json` and `abi/TransparentUpgradeableProxy.json`, which the Go
+  integration test reads to deploy.
+- **Lint uses pinned tools** (`gofumpt v0.1.0`, not `@latest`) — format with the
+  pinned version or you'll wrongly reformat upstream files.
+- **`MST_RELAYER_KEY` / `MST_OWNER_KEY` are env-only** by design — never in a config
+  file.
 
-## 10. What is intentionally NOT done (and the Part 2 hooks)
+## 9. What is intentionally NOT solved (current caveats)
 
-- **Zero-knowledge proofs (Part 2)** are out of scope. The design leaves room:
-  outbox entries carry an `EntryType`, the commitment carries `schema_version` and
-  `domain_tag`, and the sender's submit step is small/extensible — a second payload
-  type (a proof) and a second destination contract (a verifier) slot in without
-  disturbing the pipeline.
-- **Open productionizing items** (suggested, not built): relayer key in a
-  keystore/HSM instead of an env var; a periodic re-verification auditor (guards
-  against deep reorgs after `DONE`); outbox retention/pruning (`DONE` + quarantine
-  currently grow unbounded); a dedicated stuck-entry alarm metric; wiring embedded
-  metrics into the peer's operations endpoint.
-- **The full live end-to-end on a real Fabric network** has not been run in-session
-  (needs Docker/Fabric images); every component is unit/integration-tested and the
-  procedure is in [`deploy/README.md`](deploy/README.md).
-- **PR #21** carries this branch; CI (including the cross-language gate and the
-  real-CouchDB job) runs there.
+See [`PHASE-1.5.md`](PHASE-1.5.md) for the full list. In brief:
 
-## 11. Glossary
+- **Anchor status is an attestation, not a proof** — narrowed to peer-role writers;
+  truth is established off-ledger with `peer mst verify`.
+- **All endorsing peers must run the MST binary** — now an explicit capability gate,
+  not a silent failure; scope write-back endorsement to the MST-running org(s) for
+  mixed networks.
+- **Anchors are governance-mutable via the proxy admin** — the trade-off for a stable
+  address; harden with a timelock+multisig admin.
+- **Cross-chain migration still splits history**; **MST reorgs** can invalidate a
+  recorded hash (mitigated by confirmations); **batched write-back** and a
+  **contract-history registry** are future work.
+- **No single fully-automated live-network e2e** — covered by layered automation
+  (simulated pipeline e2e, real-chain EVM integration incl. the proxy + allowlist, CLI
+  unit tests, hardhat) plus the manual walkthrough in [`deploy/README.md`](deploy/README.md).
 
-- **Commitment** — the 32-byte keccak256 fingerprint of a transaction's tuple; the
-  thing anchored.
-- **Canonical encoding** — the deterministic, byte-exact serialization that makes
-  commitments reproducible across languages.
-- **Declared payload** — the business fields a chaincode chooses to cover with a
-  proof; only their hash travels.
-- **Capture** — reading committed blocks and turning opted-in txs into outbox entries.
-- **Outbox** — the relayer's own crash-safe queue (LevelDB or CouchDB).
-- **Relayer / sender** — drains the outbox to MST, confirms, writes back.
-- **Anchor** — the on-chain record `fabric_tx_id → commitment` (or the batch root).
-- **Root / inclusion proof** — in merkle batching, the single anchored root and the
-  sibling hashes that prove one tx is under it.
-- **Write-back** — recording on Fabric's own ledger that a tx was anchored.
-- **Capture mode** — `opt-in` (only `MSTProofRequest` emitters) vs `all` (every valid tx).
-- **Batch strategy** — `individual` (one record per tx) vs `merkle` (one root per flush).
-- **Cadence** — *when* to flush: `per-tx` / `batch` / `interval` / `cron`.
+## 10. Glossary (new-approach additions)
+
+- **Channel-config MST value** — the all-org-agreed `MSTAnchor` value in the
+  Application group; the authoritative record of whether/how a channel anchors.
+- **`V2_5_MSTANCHOR` capability** — the application capability gating the `MSTAnchor`
+  value; makes "all peers patched" an explicit upgrade gate.
+- **System chaincode (`mstscc`)** — the built-in, channel-gated write-back target;
+  peer-role authorized; the consensus-backed anchor-status ledger fact.
+- **Peer-role gate** — the `MSPRole{PEER}` check on `RecordAnchor`; requires NodeOUs.
+- **Transparent proxy** — the OZ upgradeable proxy in front of `MSTAnchor`; gives a
+  stable per-channel address at the cost of a governed upgrade authority.
+- **Hot-reload** — the discovery loop restarting a channel's pipeline when its
+  governed config changes (live reconfiguration).
+- **Preflight** — `peer mst preflight`, the pre-config-update check against the live
+  chain (contract deployed, chain-id match, NodeOUs).
+
+*(For the unchanged terms — commitment, canonical encoding, outbox, capture mode,
+batch strategy, cadence, inclusion proof — see the Phase 1 glossary; they are
+identical.)*
