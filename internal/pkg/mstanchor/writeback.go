@@ -38,18 +38,34 @@ const statusConfirmed = "CONFIRMED"
 const writeBackTimeout = 2 * time.Minute
 
 // GatewayInvoker is the in-process slice of the peer's gateway server the
-// write-back needs; *gateway.Server satisfies it. Calling the server's Go
-// methods directly avoids a loopback network hop entirely.
+// write-back needs for ordering + commit; *gateway.Server satisfies it.
+// Calling the server's Go methods directly avoids a loopback network hop.
+//
+// Note the write-back does NOT use the gateway's Endorse: that path plans
+// endorsement via discovery, which requires _lifecycle chaincode metadata.
+// mstscc is a built-in system chaincode with no such metadata, so gateway
+// Endorse fails ("No metadata was found for chaincode mstscc"). Endorsement
+// is done directly against the local endorser (EndorserProcessor) instead;
+// only ordering (Submit) and commit polling (CommitStatus) go through the
+// gateway, both of which are stateless with respect to chaincode metadata.
 type GatewayInvoker interface {
-	Endorse(ctx context.Context, request *gp.EndorseRequest) (*gp.EndorseResponse, error)
 	Submit(ctx context.Context, request *gp.SubmitRequest) (*gp.SubmitResponse, error)
 	CommitStatus(ctx context.Context, signedRequest *gp.SignedCommitStatusRequest) (*gp.CommitStatusResponse, error)
 }
 
+// EndorserProcessor is the in-process slice of the peer's local endorser the
+// write-back uses to endorse the RecordAnchor proposal; *endorser.Endorser
+// satisfies it. Endorsing here (rather than via the gateway) is what lets the
+// write-back target the built-in mstscc, which has no discovery metadata.
+type EndorserProcessor interface {
+	ProcessProposal(ctx context.Context, signedProp *peer.SignedProposal) (*peer.ProposalResponse, error)
+}
+
 // LoopbackWriteBack records anchor status on Fabric by submitting
-// RecordAnchor transactions through the peer's own embedded gateway, signed
-// with the relayer's Fabric identity.
+// RecordAnchor transactions through the peer's own embedded endorser and
+// gateway, signed with the relayer's Fabric identity.
 type LoopbackWriteBack struct {
+	endorser  EndorserProcessor
 	gateway   GatewayInvoker
 	signer    *identitySigner
 	chaincode string
@@ -57,13 +73,14 @@ type LoopbackWriteBack struct {
 
 var _ sender.WriteBack = (*LoopbackWriteBack)(nil)
 
-// NewLoopbackWriteBack loads the relayer identity and wraps the gateway.
-func NewLoopbackWriteBack(gateway GatewayInvoker, chaincode, mspID, certPath, keyPath string) (*LoopbackWriteBack, error) {
+// NewLoopbackWriteBack loads the relayer identity and wraps the local
+// endorser (for endorsement) and gateway (for ordering + commit).
+func NewLoopbackWriteBack(endorser EndorserProcessor, gateway GatewayInvoker, chaincode, mspID, certPath, keyPath string) (*LoopbackWriteBack, error) {
 	signer, err := newIdentitySigner(mspID, certPath, keyPath)
 	if err != nil {
 		return nil, err
 	}
-	return &LoopbackWriteBack{gateway: gateway, signer: signer, chaincode: chaincode}, nil
+	return &LoopbackWriteBack{endorser: endorser, gateway: gateway, signer: signer, chaincode: chaincode}, nil
 }
 
 // Record submits RecordAnchor(fabricTxID, evmTxHash, CONFIRMED) and waits
@@ -101,18 +118,25 @@ func (w *LoopbackWriteBack) Record(ctx context.Context, e *outbox.Entry) error {
 		return fmt.Errorf("mstanchor: sign proposal: %w", err)
 	}
 
-	endorsed, err := w.gateway.Endorse(ctx, &gp.EndorseRequest{
-		TransactionId:       txID,
-		ChannelId:           e.ChannelID,
-		ProposedTransaction: signedProposal,
-	})
+	// Endorse directly against the local endorser rather than the gateway:
+	// mstscc is a built-in system chaincode with no discovery/_lifecycle
+	// metadata, so the gateway's endorsement planning cannot find it. The
+	// local endorser runs mstscc in-process and endorses unconditionally.
+	response, err := w.endorser.ProcessProposal(ctx, signedProposal)
 	if err != nil {
 		return fmt.Errorf("mstanchor: endorse RecordAnchor: %w", err)
 	}
-	envelope := endorsed.GetPreparedTransaction()
-	envelope.Signature, err = w.signer.Sign(envelope.GetPayload())
+	if s := response.GetResponse().GetStatus(); s < 200 || s >= 400 {
+		return fmt.Errorf("mstanchor: RecordAnchor endorsement failed (%d): %s",
+			s, response.GetResponse().GetMessage())
+	}
+
+	// Assemble and sign the transaction envelope from the endorsed response;
+	// gateway.Submit only orders an already-signed envelope, so it does not
+	// need the chaincode metadata the endorsement path lacks.
+	envelope, err := protoutil.CreateSignedTx(proposal, w.signer, response)
 	if err != nil {
-		return fmt.Errorf("mstanchor: sign transaction: %w", err)
+		return fmt.Errorf("mstanchor: assemble transaction: %w", err)
 	}
 
 	if _, err := w.gateway.Submit(ctx, &gp.SubmitRequest{

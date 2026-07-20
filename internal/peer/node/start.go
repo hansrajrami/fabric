@@ -766,6 +766,10 @@ func serve(args []string) error {
 		Support:                endorserSupport,
 		Metrics:                endorser.NewMetrics(metricsProvider),
 	}
+	// The MST write-back endorses RecordAnchor against the local endorser
+	// directly (mstscc is built-in and has no discovery metadata for the
+	// gateway to plan against); ordering + commit still go via the gateway.
+	mstEndorserServer = serverEndorser
 
 	// deploy system chaincodes
 	for _, cc := range []scc.SelfDescribingSysCC{lsccInst, csccInst, qsccInst, lifecycleSCC, mstsccInst} {

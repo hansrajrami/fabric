@@ -201,7 +201,9 @@ from Phase 1** — see the Phase 1 file map if you need it. Phase 1.5 adds/chang
   ChainID/allowlist/NodeOUs startup warnings, per-pipeline cancellation.
 - `internal/pkg/mstanchor/config.go` — reads only peer-local knobs; `CaptureConfigFor`/
   `SenderConfigFor` build from the channel config.
-- `internal/peer/node/mst.go` — write-back wired to the SCC via the in-process gateway.
+- `internal/peer/node/mst.go` — write-back wired to the SCC: endorsed in-process
+  against the local endorser (the built-in `mstscc` has no discovery metadata for
+  the gateway to plan against), then ordered + commit-polled through the gateway.
 
 ### Operator CLI (`internal/peer/mst/`)
 - `mst.go` (shared setup), `query.go`, `config.go` (channel-config / onchain),

@@ -17,9 +17,14 @@ import (
 	"github.com/hansrajrami/fabric/mst/relay/sender"
 )
 
-// mstGatewayServer is set by serve() when the embedded gateway is created;
-// the MST write-back invokes it in-process (no loopback network hop).
-var mstGatewayServer *gateway.Server
+// mstGatewayServer and mstEndorserServer are set by serve() as the peer
+// wires up its gateway and endorser; the MST write-back invokes them
+// in-process (no loopback network hop). The endorser handles endorsement
+// (it runs the built-in mstscc), the gateway handles ordering + commit.
+var (
+	mstGatewayServer  *gateway.Server
+	mstEndorserServer mstanchor.EndorserProcessor
+)
 
 // startMSTAnchoring boots the embedded MST anchoring pipeline when
 // core.yaml enables it (mst.enabled, default false). Returns nil when
@@ -43,7 +48,11 @@ func startMSTAnchoring(peerInstance *peer.Peer) (*mstanchor.Service, error) {
 		if mstGatewayServer == nil {
 			return nil, fmt.Errorf("mst write-back requires the embedded gateway (peer.gateway.enabled) and discovery (peer.discovery.enabled)")
 		}
+		if mstEndorserServer == nil {
+			return nil, fmt.Errorf("mst write-back requires the peer endorser to be initialized")
+		}
 		writeback, err = mstanchor.NewLoopbackWriteBack(
+			mstEndorserServer,
 			mstGatewayServer,
 			mstscc.Name,
 			cfg.WriteBack.MSPID,

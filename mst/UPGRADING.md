@@ -68,9 +68,15 @@ compiler will tell you):
 - `core/peer.Peer.GetLedger` / `GetChannelsInfo`
 - `common/ledger.Ledger.GetBlocksIterator` (blocking tail iterator; `Close()`
   interrupts, closed iterator returns `nil, nil`)
-- `protoutil` unmarshalers + `internal/pkg/txflags.ValidationFlags`
-- `internal/pkg/gateway.Server`'s `Endorse` / `Submit` / `CommitStatus`
-  methods (embedded write-back invokes them in-process)
+- `protoutil` unmarshalers + `protoutil.CreateSignedTx` +
+  `internal/pkg/txflags.ValidationFlags`
+- `core/endorser.Endorser`'s `ProcessProposal` method (embedded write-back
+  endorses `RecordAnchor` against the local endorser in-process — the gateway's
+  `Endorse` cannot be used because it plans endorsement via discovery, and the
+  built-in `mstscc` has no `_lifecycle` metadata)
+- `internal/pkg/gateway.Server`'s `Submit` / `CommitStatus` methods (embedded
+  write-back orders the signed envelope and polls commit through them; both are
+  independent of chaincode discovery metadata)
 - `bccsp/utils.SignatureToLowS`
 
 The **sidecar `mst-relayd` has zero dependence on the fabric module** — it
