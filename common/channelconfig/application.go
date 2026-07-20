@@ -11,7 +11,7 @@ import (
 	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/pkg/errors"
-	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 const (
@@ -24,13 +24,14 @@ const (
 
 // ApplicationProtos is used as the source of the ApplicationConfig. The
 // MSTAnchor field carries the channel's MST anchoring configuration as an
-// opaque JSON payload inside a structpb.Value (string kind); the field name
-// doubles as the config value key (see MSTAnchorKey). structpb is used rather
-// than a bespoke fabric-protos message so the fork stays additive.
+// opaque JSON payload inside a wrapperspb.StringValue; the field name doubles as
+// the config value key (see MSTAnchorKey). A well-known wrapper is used rather
+// than a bespoke fabric-protos message so the fork stays additive, and a
+// StringValue (not structpb.Value) so configtxlator's protolator can render it.
 type ApplicationProtos struct {
 	ACLs         *pb.ACLs
 	Capabilities *cb.Capabilities
-	MSTAnchor    *structpb.Value
+	MSTAnchor    *wrapperspb.StringValue
 }
 
 // ApplicationConfig implements the Application interface
@@ -64,7 +65,7 @@ func NewApplicationConfig(appGroup *cb.ConfigGroup, mspConfig *MSPConfigHandler)
 	// gate — a vanilla binary refuses the channel via Capabilities().Supported()
 	// rather than silently failing to endorse the write-back. A present value
 	// without the capability is a misconfiguration and is rejected here.
-	if raw := ac.protos.MSTAnchor.GetStringValue(); raw != "" {
+	if raw := ac.protos.MSTAnchor.GetValue(); raw != "" {
 		if !ac.Capabilities().MSTAnchor() {
 			return nil, errors.Errorf("the %s config value may not be specified without the %s application capability", MSTAnchorKey, capabilities.ApplicationMSTAnchor)
 		}

@@ -12,17 +12,19 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // MSTAnchorKey is the Application-group config value key carrying the
-// channel's MST anchoring settings. The value is a wrapperspb.BytesValue
+// channel's MST anchoring settings. The value is a wrapperspb.StringValue
 // whose payload is the JSON encoding of MSTAnchorConfig (see application.go),
 // deliberately kept as an opaque JSON blob so the fork does not have to add a
-// message to the fabric-protos module. A peer or orderer that does not know
-// this key (i.e. an unpatched binary) will reject a channel config that sets
-// it — participation therefore requires every node on the channel to run the
-// MST-enabled binary, which is the intended all-nodes-agree constraint.
+// message to the fabric-protos module. A StringValue (not structpb.Value) is
+// used so configtxlator's protolator can decode/encode it. A peer or orderer
+// that does not know this key (i.e. an unpatched binary) will reject a channel
+// config that sets it — participation therefore requires every node on the
+// channel to run the MST-enabled binary, which is the intended all-nodes-agree
+// constraint.
 const MSTAnchorKey = "MSTAnchor"
 
 // MSTAnchorConfig is the channel-level MST anchoring configuration, agreed by
@@ -116,7 +118,10 @@ var mstCadenceModes = map[string]bool{
 // MSTAnchorValue returns the Application-group config value carrying the given
 // MST anchoring configuration, for use by config tooling (configtxgen) and
 // tests. It is a value for /Channel/Application. The config is stored as a
-// JSON string inside a structpb.Value under the MSTAnchor key.
+// JSON string inside a wrapperspb.StringValue under the MSTAnchor key. A
+// StringValue (single scalar field, no oneof) is chosen over structpb.Value so
+// configtxlator's protolator — which cannot render oneof fields — can decode and
+// encode config blocks/updates on MST-enabled channels.
 func MSTAnchorValue(cfg *MSTAnchorConfig) (*StandardConfigValue, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -127,7 +132,7 @@ func MSTAnchorValue(cfg *MSTAnchorConfig) (*StandardConfigValue, error) {
 	}
 	return &StandardConfigValue{
 		key:   MSTAnchorKey,
-		value: structpb.NewStringValue(string(raw)),
+		value: wrapperspb.String(string(raw)),
 	}, nil
 }
 

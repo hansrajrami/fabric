@@ -12,7 +12,7 @@ import (
 	cb "github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/common/capabilities"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 const testContract = "0x1234567890abcdefABCDEF1234567890aBcDeF12"
@@ -31,7 +31,7 @@ func mstValueBytes(t *testing.T, cfg *MSTAnchorConfig) []byte {
 // bytes, bypassing MSTAnchorValue's validation (used for negative tests).
 func stringValueBytes(t *testing.T, s string) []byte {
 	t.Helper()
-	raw, err := proto.Marshal(structpb.NewStringValue(s))
+	raw, err := proto.Marshal(wrapperspb.String(s))
 	require.NoError(t, err)
 	return raw
 }

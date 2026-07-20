@@ -155,4 +155,8 @@ replace (
 	github.com/hansrajrami/fabric/mst/canonical => ./mst/canonical
 	github.com/hansrajrami/fabric/mst/fabric-chaincode/proofhelper => ./mst/fabric-chaincode/proofhelper
 	github.com/hansrajrami/fabric/mst/relay => ./mst/relay
+	// Patched fork: registers the MSTAnchor Application config value in the
+	// protolator so configtxlator can decode/encode MST-enabled channel configs.
+	// See mst/fabric-config/protolator/protoext/peerext/configuration.go.
+	github.com/hyperledger/fabric-config => ./mst/fabric-config
 )

@@ -33,10 +33,32 @@ thin as possible (a self-contained file plus a few registration lines):
 | `internal/configtxgen/genesisconfig/config.go`, `encoder/encoder.go` | one profile struct + one encode block for the MSTAnchor value | Low |
 | `sampleconfig/core.yaml` | `mstscc: enable` under `chaincode.system` | Trivial |
 | `sampleconfig/configtx.yaml` | commented `MSTAnchor` example under `Application` | Trivial |
+| `mst/fabric-config/` + `replace` in `go.mod` | **patched fork** of `github.com/hyperledger/fabric-config` (a separate module, like `mst/relay`) that registers the `MSTAnchor` value in the protolator so `configtxlator` can decode/encode it | Moderate — see below |
 
-The encoding choice — JSON inside a `structpb.Value`, not a new `fabric-protos`
-message — is deliberate: it keeps the channelconfig change to a plain field and
-avoids touching the protos module at all.
+The encoding choice — JSON inside a `wrapperspb.StringValue`, not a new
+`fabric-protos` message — is deliberate: it keeps the channelconfig change to a
+plain field and avoids touching the protos module at all.
+
+**The `fabric-config` fork (configtxlator support).** `configtxlator` decodes
+config through `fabric-config`'s protolator, which has a hardcoded switch of
+known Application config values and no extension hook — so a custom value
+(`MSTAnchor`) makes `configtxlator proto_decode`/`proto_encode` fail
+(`Unknown Application ConfigValue name: MSTAnchor`), breaking every
+configtxlator-based config update on an MST channel. The fix is a local fork of
+the module at `mst/fabric-config/` (wired via a `replace` in `go.mod`, same
+pattern as the `mst/*` modules) that adds the `MSTAnchor` case. Two subtleties
+that matter on a merge/upgrade:
+- The value is stored (in `common/channelconfig`) as a `wrapperspb.StringValue`,
+  but the protolator registers a small **golang/protobuf v1** carrier
+  (`MSTAnchorConfigValue`, wire-compatible: a single `value` string, tag 1). This
+  is because fabric-config v0.1.0's protolator reflects via the legacy
+  `proto.GetProperties` and cannot introspect v2 well-known types (`structpb` /
+  `wrapperspb`) or `oneof`s. Keep the carrier a v1 message.
+- Because it is a `replace` to a source module (not a bare vendored patch), the
+  fix **survives `go mod vendor`**. If you bump the real `fabric-config` version
+  upstream, re-apply the one-case patch onto the new fork, or drop the fork if a
+  future fabric-config exposes an extension hook. The round-trip is guarded by
+  `internal/configtxlator/rest/mstanchor_roundtrip_test.go`.
 
 ## Upstream APIs the embedded mode depends on
 
