@@ -380,6 +380,11 @@ func serve(args []string) error {
 		PrivdataConfig:               privdataConfig,
 		Resources:                    lifecycleResources,
 		LegacyDeployedCCInfoProvider: &lscc.DeployedCCInfoProvider{},
+		// mstscc is a built-in system chaincode invoked via ordered transactions
+		// (the MST write-back), but has no lscc/_lifecycle definition; list it so
+		// its transactions get a default endorsement policy and validate instead
+		// of failing as INVALID_CHAINCODE.
+		EmbeddedSystemChaincodes: map[string]struct{}{mstscc.Name: {}},
 	}
 
 	// Configure CC package storage before ccInfoFSImpl.ListInstalledChaincodes() gets called

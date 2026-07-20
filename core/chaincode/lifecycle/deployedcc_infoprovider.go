@@ -9,6 +9,7 @@ package lifecycle
 import (
 	"fmt"
 	"regexp"
+	"sort"
 
 	cb "github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
@@ -46,6 +47,15 @@ type ValidatorCommitter struct {
 	PrivdataConfig               *privdata.PrivdataConfig
 	Resources                    *Resources
 	LegacyDeployedCCInfoProvider LegacyDeployedCCInfoProvider
+	// EmbeddedSystemChaincodes are built-in system chaincodes that are invoked
+	// via ordered transactions (e.g. the MST anchor-status chaincode mstscc's
+	// write-back) but have no lscc/_lifecycle chaincode definition. Without an
+	// entry here their transactions fail validation (INVALID_CHAINCODE), because
+	// neither lifecycle can supply an endorsement policy for them. Listed names
+	// validate with a default endorsement policy — a single member of any channel
+	// application org — which a peer's own endorsement of the built-in chaincode
+	// satisfies. Populated at peer start; empty for vanilla channels.
+	EmbeddedSystemChaincodes map[string]struct{}
 }
 
 // Namespaces returns the list of namespaces which are relevant to chaincode lifecycle
@@ -312,6 +322,20 @@ func (vc *ValidatorCommitter) ImplicitCollectionEndorsementPolicyAsBytes(channel
 // if the unexpected error is not nil and mark the transaction as invalid if the validation
 // error is not nil.
 func (vc *ValidatorCommitter) ValidationInfo(channelID, chaincodeName string, qe ledger.SimpleQueryExecutor) (plugin string, args []byte, unexpectedErr error, validationErr error) {
+	// Built-in system chaincodes invoked via ordered transactions (e.g. mstscc's
+	// write-back) have no lscc/_lifecycle definition, so the normal lookup below
+	// would fall through to the legacy lifecycle and fail validation with
+	// "chaincode <name> not found" (INVALID_CHAINCODE). Give them a default
+	// endorsement policy — any single member of an application org — so that the
+	// peer's own endorsement of the built-in chaincode validates and commits.
+	if _, ok := vc.EmbeddedSystemChaincodes[chaincodeName]; ok {
+		policy, err := vc.embeddedSystemChaincodePolicy(channelID)
+		if err != nil {
+			return "", nil, err, nil
+		}
+		return "vscc", policy, nil, nil
+	}
+
 	// TODO, this is a bit of an overkill check, and will need to be scaled back for non-chaincode type namespaces
 	exists, definedChaincode, err := vc.Resources.ChaincodeDefinitionIfDefined(chaincodeName, &SimpleQueryExecutorShim{
 		Namespace:           LifecycleNamespace,
@@ -337,6 +361,34 @@ func (vc *ValidatorCommitter) ValidationInfo(channelID, chaincodeName string, qe
 	}
 
 	return definedChaincode.ValidationInfo.ValidationPlugin, definedChaincode.ValidationInfo.ValidationParameter, nil, nil
+}
+
+// embeddedSystemChaincodePolicy builds the default validation (endorsement)
+// policy for an embedded system chaincode: a single member of any of the
+// channel's application organizations. A peer's own endorsement of the built-in
+// chaincode (produced in-process during the write-back) is a member of its org,
+// so it satisfies this policy. Returned as a marshaled ApplicationPolicy, the
+// same shape the vscc plugin expects.
+func (vc *ValidatorCommitter) embeddedSystemChaincodePolicy(channelID string) ([]byte, error) {
+	channelConfig := vc.Resources.ChannelConfigSource.GetStableChannelConfig(channelID)
+	if channelConfig == nil {
+		return nil, errors.Errorf("could not get channel config for channel '%s'", channelID)
+	}
+	ac, ok := channelConfig.ApplicationConfig()
+	if !ok {
+		return nil, errors.Errorf("could not get application config for channel '%s'", channelID)
+	}
+	orgs := ac.Organizations()
+	mspids := make([]string, 0, len(orgs))
+	for _, org := range orgs {
+		mspids = append(mspids, org.MSPID())
+	}
+	sort.Strings(mspids) // deterministic policy bytes across peers
+	return protoutil.MarshalOrPanic(&cb.ApplicationPolicy{
+		Type: &cb.ApplicationPolicy_SignaturePolicy{
+			SignaturePolicy: policydsl.SignedByAnyMember(mspids),
+		},
+	}), nil
 }
 
 // CollectionValidationInfo returns information about collections to the validation component

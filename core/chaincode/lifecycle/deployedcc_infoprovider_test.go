@@ -661,6 +661,42 @@ var _ = Describe("ValidatorCommitter", func() {
 			})
 		})
 
+		Context("when the chaincode is a registered embedded system chaincode", func() {
+			BeforeEach(func() {
+				vc.EmbeddedSystemChaincodes = map[string]struct{}{"mstscc": {}}
+			})
+
+			It("returns the builtin plugin and a default any-member endorsement policy", func() {
+				vPlugin, vParm, uerr, verr := vc.ValidationInfo("channel-id", "mstscc", fakeQueryExecutor)
+				Expect(uerr).NotTo(HaveOccurred())
+				Expect(verr).NotTo(HaveOccurred())
+				Expect(vPlugin).To(Equal("vscc"))
+				Expect(vParm).NotTo(BeNil())
+				// it does not consult the ledger for a chaincode definition.
+				Expect(fakeQueryExecutor.GetStateCallCount()).To(Equal(0))
+			})
+
+			It("does not affect chaincodes that are not registered", func() {
+				vPlugin, vParm, uerr, verr := vc.ValidationInfo("channel-id", "missing-name", fakeQueryExecutor)
+				Expect(vPlugin).To(BeEmpty())
+				Expect(vParm).To(BeNil())
+				Expect(uerr).NotTo(HaveOccurred())
+				Expect(verr).NotTo(HaveOccurred())
+			})
+
+			Context("when the channel config is unavailable", func() {
+				BeforeEach(func() {
+					fakeChannelConfigSource.GetStableChannelConfigReturns(nil)
+				})
+
+				It("treats the error as non-deterministic (unexpected)", func() {
+					_, _, uerr, verr := vc.ValidationInfo("channel-id", "mstscc", fakeQueryExecutor)
+					Expect(verr).NotTo(HaveOccurred())
+					Expect(uerr).To(MatchError("could not get channel config for channel 'channel-id'"))
+				})
+			})
+		})
+
 		Context("when the ledger returns an error", func() {
 			BeforeEach(func() {
 				fakeQueryExecutor.GetStateReturns(nil, fmt.Errorf("state-error"))

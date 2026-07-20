@@ -174,6 +174,22 @@ relayer therefore signs the write-back with the peer's own node identity
 > directions — the SCC wants *peer*, the orderer's default Writers wants
 > *admin/client* — so a working channel must widen `Writers` to include peer.
 
+**Write-back validation — a built-in endorsement policy for mstscc.** The
+write-back is an ordered `ENDORSER_TRANSACTION`, so after the orderer accepts it
+the committer *validates* it: it looks up the chaincode's endorsement policy and
+checks the transaction's endorsements against it. But `mstscc` is a built-in
+system chaincode with **no lscc/_lifecycle definition**, so the default lookup
+falls through to the legacy lifecycle and fails validation with `chaincode mstscc
+not found` (`INVALID_CHAINCODE`) — only `_lifecycle` is otherwise special-cased to
+validate without a deployed definition. To close this, the peer registers
+`mstscc` in `ValidatorCommitter.EmbeddedSystemChaincodes`
+(`core/chaincode/lifecycle/deployedcc_infoprovider.go`), which gives it a default
+endorsement policy of **a single member of any application org**. The write-back
+is endorsed in-process by the peer's own identity (a member of its org), so that
+one endorsement satisfies the policy and the record commits. Security still rests
+on the endorsement-time peer-role gate and signature unforgeability — validation
+only confirms a legitimate org member endorsed; it does not re-run the gate.
+
 **Trust model — attestation + pointer, verified off-ledger.** The stored record
 is an **attestation** by a peer-role identity plus a public **pointer**
 (`anchor_ref` = the MST tx hash); it is deliberately **not** a proof. A Fabric
