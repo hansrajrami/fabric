@@ -117,9 +117,15 @@ Each field is optional and falls back to a fixed built-in default (never to
 keeps only peer-local plumbing (RPC URL, relayer key, outbox path, workers,
 cadence, gas tuning, metrics). `ChainID` is a validated assertion: a peer has one
 RPC endpoint, so it refuses to anchor a channel whose `ChainID` does not match
-the chain its node reports (`internal/pkg/mstanchor/service.go`). **Limitation:**
-promoted fields are read when a channel's pipeline starts; changing one via a
-later config update takes effect on pipeline restart (same as enablement today).
+the chain its node reports (`internal/pkg/mstanchor/service.go`). **Applied live:**
+the embedded service's discovery loop reconciles each channel's running pipeline
+with its current config every tick — a change to any governed field **hot-reloads**
+that channel's pipeline (stop + restart with the new config), and disabling MST (or
+a peer becoming allowlist-excluded / chain-id-mismatched) **stops** it. The
+per-channel restart is safe: the outbox is durable and capture resumes from its
+checkpoint, so it loses nothing (the contract is idempotent and the outbox dedupes).
+Peer-local `core.yaml` settings (workers, backoff, outbox path) still require a peer
+restart, since they are not channel-governed.
 
 ### 2. System chaincode (`core/scc/mstscc`)
 

@@ -7,6 +7,7 @@ package mstanchor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -55,7 +56,6 @@ type Service struct {
 
 	mu        sync.Mutex
 	pipelines map[string]*pipeline
-	stores    []outbox.Store
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	metricsLn *http.Server
@@ -71,6 +71,14 @@ type Service struct {
 type pipeline struct {
 	channelID string
 	store     outbox.Store
+	// cancel stops just this channel's capture+sender goroutines; done waits for
+	// them so the store is closed only after they have stopped using it.
+	cancel context.CancelFunc
+	done   *sync.WaitGroup
+	// fp is the fingerprint of the channel-governed config this pipeline was
+	// started with; a change means the config was updated and the pipeline is
+	// hot-reloaded.
+	fp string
 }
 
 // New builds the embedded service. writeback may be nil (no write-back
@@ -137,11 +145,13 @@ func (s *Service) Stop() {
 		return
 	}
 	s.cancel()
-	s.wg.Wait()
+	s.wg.Wait() // drains the discover loop, balance watcher, and all pipeline goroutines
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, store := range s.stores {
-		_ = store.Close()
+	// All pipeline goroutines have stopped (s.wg.Wait above), so their stores are
+	// safe to close.
+	for _, p := range s.pipelines {
+		_ = p.store.Close()
 	}
 	if s.client != nil {
 		s.client.Close()
@@ -169,47 +179,102 @@ func (s *Service) discoverLoop(ctx context.Context) {
 	}
 }
 
+// startNewPipelines reconciles running pipelines with the channels' current
+// configuration on every discovery tick: it starts a pipeline for a newly-enabled
+// channel, stops one whose channel disabled anchoring (or that this peer no longer
+// anchors), and hot-reloads one whose channel-governed config changed — so a
+// channel-config update takes effect live, not only on peer restart.
 func (s *Service) startNewPipelines(ctx context.Context) {
 	for _, channelID := range s.channels() {
 		// Enablement is authoritative from the channel's own configuration
 		// (all orgs agreeing through the Application group's modification
-		// policy), not this peer's core.yaml. A channel that has not turned
-		// MST anchoring on is skipped entirely.
+		// policy), not this peer's core.yaml.
 		mstCfg, ok := s.channelMSTConfig(channelID)
-		if !ok || !mstCfg.Enabled {
-			continue
-		}
-		// The core.yaml mst.channels allowlist is a peer-local secondary
-		// filter only: a peer may decline to anchor a channel even though the
-		// channel enabled it. Surface that mismatch loudly (once).
-		if !s.cfg.channelAllowed(channelID) {
+		want := ok && mstCfg.Enabled
+
+		// The core.yaml mst.channels allowlist is a peer-local secondary filter:
+		// a peer may decline to anchor a channel even though the channel enabled
+		// it. Surface that mismatch loudly (once).
+		if want && !s.cfg.channelAllowed(channelID) {
 			s.warnOnce(channelID, "channel enabled MST anchoring in its config but this peer's mst.channels allowlist excludes it; not anchoring")
-			continue
+			want = false
 		}
 		// A peer has one RPC endpoint and therefore one chain. If the channel
 		// declares a different chain id than the peer is connected to, anchoring
-		// it would write to the wrong chain — refuse (a peer's core.yaml must
-		// point at the right MST node for the channels it anchors).
-		if mstCfg.ChainID != 0 && s.client.ChainID() != 0 && mstCfg.ChainID != s.client.ChainID() {
+		// it would write to the wrong chain — refuse.
+		if want && mstCfg.ChainID != 0 && s.client.ChainID() != 0 && mstCfg.ChainID != s.client.ChainID() {
 			s.warnOnce(channelID, fmt.Sprintf("channel MST chainID %d does not match the peer's connected chain %d; not anchoring", mstCfg.ChainID, s.client.ChainID()))
-			continue
+			want = false
 		}
-		// The mstscc write-back gate authorizes only peer-role identities, which
-		// requires the submitting org's MSP to have NodeOUs peer classification.
-		// Without it, write-backs are silently rejected on chain — surface that
-		// loudly (once). Advisory only: anchoring still proceeds (the anchor is
-		// submitted to MST; only the Fabric write-back record would be rejected).
-		s.warnIfWritebackOrgLacksNodeOUs(channelID)
+
 		s.mu.Lock()
-		_, running := s.pipelines[channelID]
-		s.mu.Unlock()
-		if running {
-			continue
+		running, isRunning := s.pipelines[channelID]
+		var runningFP string
+		if isRunning {
+			runningFP = running.fp
 		}
-		if err := s.startPipeline(ctx, channelID, mstCfg); err != nil {
-			logger.Errorw("failed to start anchoring pipeline", "channel", channelID, "err", err)
+		s.mu.Unlock()
+
+		var desiredFP string
+		if want {
+			desiredFP = pipelineFingerprint(mstCfg)
+		}
+
+		switch planPipelineAction(isRunning, runningFP, want, desiredFP) {
+		case actionStart:
+			// The mstscc write-back gate authorizes only peer-role identities;
+			// warn (once) if the write-back org lacks NodeOUs peer classification.
+			s.warnIfWritebackOrgLacksNodeOUs(channelID)
+			if err := s.startPipeline(ctx, channelID, mstCfg); err != nil {
+				logger.Errorw("failed to start anchoring pipeline", "channel", channelID, "err", err)
+			}
+		case actionRestart:
+			logger.Infow("channel MST config changed; reloading pipeline", "channel", channelID)
+			s.stopPipeline(channelID)
+			if err := s.startPipeline(ctx, channelID, mstCfg); err != nil {
+				logger.Errorw("failed to reload anchoring pipeline", "channel", channelID, "err", err)
+			}
+		case actionStop:
+			logger.Infow("MST anchoring no longer active for channel; stopping pipeline", "channel", channelID)
+			s.stopPipeline(channelID)
+		case actionNone:
 		}
 	}
+}
+
+type pipelineAction int
+
+const (
+	actionNone pipelineAction = iota
+	actionStart
+	actionStop
+	actionRestart
+)
+
+// planPipelineAction decides what to do for one channel given whether a pipeline
+// is running (and the config fingerprint it runs with), whether this peer should
+// be anchoring the channel now (want), and the desired fingerprint.
+func planPipelineAction(running bool, runningFP string, want bool, desiredFP string) pipelineAction {
+	switch {
+	case want && !running:
+		return actionStart
+	case want && running && runningFP != desiredFP:
+		return actionRestart
+	case !want && running:
+		return actionStop
+	default:
+		return actionNone
+	}
+}
+
+// pipelineFingerprint is a deterministic digest of the channel-governed config
+// that shapes a pipeline (capture scope, batch strategy, confirmations, cadence,
+// chain id, contract address). A change means the config was updated and the
+// pipeline is hot-reloaded. Peer-local settings (workers, backoff, outbox path)
+// are not here — they cannot change without a peer restart.
+func pipelineFingerprint(mst *channelconfig.MSTAnchorConfig) string {
+	raw, _ := json.Marshal(mst)
+	return string(raw)
 }
 
 // channelMSTConfig reads the channel's MST anchoring configuration from its
@@ -325,26 +390,40 @@ func (s *Service) startPipeline(ctx context.Context, channelID string, mstCfg *c
 	source := newLedgerSource(l, logger.With("channel", channelID))
 	logger.Infow("binding channel to its MST contract", "channel", channelID, "contract", binding.Contract())
 
+	// Per-pipeline context so this channel can be stopped/hot-reloaded on a config
+	// change without disturbing the others. Goroutines are tracked by both s.wg
+	// (so Stop drains everything) and the pipeline's own done wg (so stopPipeline
+	// closes the store only after they have stopped).
+	pctx, pcancel := context.WithCancel(ctx)
+	done := &sync.WaitGroup{}
+
 	s.mu.Lock()
-	s.pipelines[channelID] = &pipeline{channelID: channelID, store: store}
-	s.stores = append(s.stores, store)
+	s.pipelines[channelID] = &pipeline{
+		channelID: channelID,
+		store:     store,
+		cancel:    pcancel,
+		done:      done,
+		fp:        pipelineFingerprint(mstCfg),
+	}
 	s.mu.Unlock()
 
 	// Capture loop with restart backoff: an iterator failure must not end
 	// anchoring for the channel.
 	s.wg.Add(2)
+	done.Add(2)
 	go func() {
 		defer s.wg.Done()
+		defer done.Done()
 		backoff := time.Second
 		for {
 			svc := capture.New(source, store, captureCfg, nil)
-			err := svc.Run(ctx)
-			if ctx.Err() != nil {
+			err := svc.Run(pctx)
+			if pctx.Err() != nil {
 				return
 			}
 			logger.Errorw("capture stream ended; restarting", "channel", channelID, "err", err, "backoff", backoff)
 			select {
-			case <-ctx.Done():
+			case <-pctx.Done():
 				return
 			case <-time.After(backoff):
 			}
@@ -355,13 +434,33 @@ func (s *Service) startPipeline(ctx context.Context, channelID string, mstCfg *c
 	}()
 	go func() {
 		defer s.wg.Done()
-		if err := snd.Run(ctx); err != nil && ctx.Err() == nil {
+		defer done.Done()
+		if err := snd.Run(pctx); err != nil && pctx.Err() == nil {
 			logger.Errorw("sender stopped", "channel", channelID, "err", err)
 		}
 	}()
 
 	logger.Infow("anchoring pipeline started", "channel", channelID)
 	return nil
+}
+
+// stopPipeline stops one channel's pipeline: it cancels the capture+sender
+// goroutines, waits for them to exit, and closes the outbox store. Safe to call
+// for a channel with no running pipeline (no-op).
+func (s *Service) stopPipeline(channelID string) {
+	s.mu.Lock()
+	p, ok := s.pipelines[channelID]
+	if ok {
+		delete(s.pipelines, channelID)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	p.cancel()
+	p.done.Wait()
+	_ = p.store.Close()
+	logger.Infow("anchoring pipeline stopped", "channel", channelID)
 }
 
 func (s *Service) startMetrics() {
