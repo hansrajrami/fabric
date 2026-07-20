@@ -185,6 +185,7 @@ chaincode:
     cscc:       enable
     lscc:       enable
     qscc:       enable
+    mstscc:     enable
   logging:
     level:  info
     shim:   warning

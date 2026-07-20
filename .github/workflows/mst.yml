@@ -14,6 +14,8 @@ on:
       - "mst/**"
       - "internal/pkg/mstanchor/**"
       - "internal/peer/node/**"
+      - "integration/mst/**"
+      - "core/scc/mstscc/**"
       - "go.mod"
       - ".github/workflows/mst.yml"
   pull_request:
@@ -21,6 +23,8 @@ on:
       - "mst/**"
       - "internal/pkg/mstanchor/**"
       - "internal/peer/node/**"
+      - "integration/mst/**"
+      - "core/scc/mstscc/**"
       - "go.mod"
       - ".github/workflows/mst.yml"
 
@@ -199,3 +203,23 @@ jobs:
         env:
           MST_EVM_RPC: http://127.0.0.1:8545
         run: go test -count=1 -run TestIntegration -v ./evm/
+
+  writeback-network:
+    name: Write-back on a real network (nwo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: install ginkgo
+        run: go install github.com/onsi/ginkgo/v2/ginkgo
+      # The suite stands up a real orderer + peers via nwo and drives the mstscc
+      # write-back end to end (endorse -> order -> commit -> validate). It uses
+      # only the built-in mstscc (no user chaincode), so it needs the Docker
+      # daemon (present on ubuntu-latest) but not the ccenv/baseos images. If a
+      # future change deploys a user chaincode here, switch to
+      # `make integration-test INTEGRATION_TEST_SUITE=mst`.
+      - name: write-back integration suite
+        run: ./scripts/run-integration-tests.sh mst

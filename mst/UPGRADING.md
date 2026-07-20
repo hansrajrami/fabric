@@ -110,7 +110,16 @@ go test ./internal/peer/node/...            # peer startup
 go build -o /tmp/peer ./cmd/peer && /tmp/peer version   # no proto-registration panic
 (cd mst/relay && go test ./...)             # pipeline modules (own go.mod, usually untouched)
 (cd mst/canonical && go test ./...)         # vector gate
+./scripts/run-integration-tests.sh mst      # write-back on a real orderer+peers network (nwo)
 ```
+
+The `integration/mst` suite is the end-to-end guard: it stands up a real
+orderer + peers, widens `Writers` to admit the peer role, and drives a `mstscc`
+`RecordAnchor` write-back through endorse → order → commit → validate, asserting
+the tx commits `VALID`. It covers the three gates that only surface on a live
+network (mstscc endorsement/validation, the `Writers` policy, and the peer-role
+gate). It uses the built-in `mstscc` only (no user chaincode), so it needs the
+Docker daemon but not the ccenv/baseos images.
 
 The `mst/**` Go modules have their own `go.mod`s and do not share the fabric
 module's dependency graph, so upstream merges normally do not affect them at
