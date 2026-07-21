@@ -167,7 +167,18 @@ func (w *LoopbackWriteBack) Record(ctx context.Context, e *outbox.Entry) error {
 	if err != nil {
 		return fmt.Errorf("mstanchor: commit status: %w", err)
 	}
-	if statusResponse.GetResult() != peer.TxValidationCode_VALID {
+	switch statusResponse.GetResult() {
+	case peer.TxValidationCode_VALID:
+		// Recorded by this transaction.
+	case peer.TxValidationCode_MVCC_READ_CONFLICT:
+		// A concurrent RecordAnchor for the same fabricTxID committed first.
+		// This tx's read set is only the deterministic anchor key (requirePeer
+		// reads the MSP, not the ledger), so an MVCC conflict here can only mean
+		// the anchor is already on the ledger — first-write-wins and idempotent.
+		// Our goal is met, so treat it as success rather than re-parking the
+		// entry. This is the expected outcome when a duplicate write-back races
+		// (e.g. a relayer restart re-submits an already-ordered anchor).
+	default:
 		return fmt.Errorf("mstanchor: RecordAnchor invalidated: %s", statusResponse.GetResult())
 	}
 	return nil

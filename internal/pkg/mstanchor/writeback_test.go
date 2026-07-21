@@ -150,13 +150,25 @@ func TestLoopbackWriteBackRecordEndorsementRejected(t *testing.T) {
 }
 
 // TestLoopbackWriteBackRecordInvalidated surfaces a transaction that commits
-// with a non-VALID validation code.
+// with a non-VALID validation code that is not the benign MVCC race.
 func TestLoopbackWriteBackRecordInvalidated(t *testing.T) {
 	endorser := &fakeEndorser{response: endorsedResponse(200)}
-	gateway := &fakeGateway{commitResult: peer.TxValidationCode_MVCC_READ_CONFLICT}
+	gateway := &fakeGateway{commitResult: peer.TxValidationCode_INVALID_CHAINCODE}
 	wb := writeBackFixture(t, endorser, gateway)
 
 	err := wb.Record(context.Background(), sampleEntry())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalidated")
+}
+
+// TestLoopbackWriteBackRecordMVCCConflictIsSuccess treats an MVCC_READ_CONFLICT
+// as success: it can only mean a concurrent write-back already recorded this
+// exact anchor (the tx's read set is only the deterministic anchor key), so the
+// entry should finalize instead of being re-parked for retry.
+func TestLoopbackWriteBackRecordMVCCConflictIsSuccess(t *testing.T) {
+	endorser := &fakeEndorser{response: endorsedResponse(200)}
+	gateway := &fakeGateway{commitResult: peer.TxValidationCode_MVCC_READ_CONFLICT}
+	wb := writeBackFixture(t, endorser, gateway)
+
+	require.NoError(t, wb.Record(context.Background(), sampleEntry()))
 }
