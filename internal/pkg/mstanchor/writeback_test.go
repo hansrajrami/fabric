@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/golang/protobuf/proto"
 	gp "github.com/hyperledger/fabric-protos-go/gateway"
 	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/stretchr/testify/require"
@@ -25,17 +26,50 @@ import (
 	"github.com/hansrajrami/fabric/mst/relay/outbox"
 )
 
-// fakeEndorser is a stand-in for the peer's local endorser. It records the
-// signed proposal it was handed and returns a canned response.
+// fakeEndorser is a stand-in for the peer's local endorser. It answers the
+// read-only IsAnchored pre-check and records the RecordAnchor proposal it was
+// handed, returning a canned response for the latter.
 type fakeEndorser struct {
-	gotProposal *peer.SignedProposal
-	response    *peer.ProposalResponse
-	err         error
+	gotProposal  *peer.SignedProposal // the RecordAnchor proposal, if any
+	recordCalls  int                  // number of RecordAnchor proposals seen
+	alreadyThere bool                 // IsAnchored answers "true" when set
+	response     *peer.ProposalResponse
+	err          error
 }
 
 func (f *fakeEndorser) ProcessProposal(_ context.Context, signedProp *peer.SignedProposal) (*peer.ProposalResponse, error) {
+	if proposalFunction(signedProp) == "IsAnchored" {
+		payload := []byte("false")
+		if f.alreadyThere {
+			payload = []byte("true")
+		}
+		return &peer.ProposalResponse{Response: &peer.Response{Status: 200, Payload: payload}}, nil
+	}
+	f.recordCalls++
 	f.gotProposal = signedProp
 	return f.response, f.err
+}
+
+// proposalFunction extracts the invoked chaincode function (args[0]) from a
+// signed proposal.
+func proposalFunction(sp *peer.SignedProposal) string {
+	prop := &peer.Proposal{}
+	if err := proto.Unmarshal(sp.GetProposalBytes(), prop); err != nil {
+		return ""
+	}
+	ccPayload := &peer.ChaincodeProposalPayload{}
+	if err := proto.Unmarshal(prop.GetPayload(), ccPayload); err != nil {
+		return ""
+	}
+	cis := &peer.ChaincodeInvocationSpec{}
+	if err := proto.Unmarshal(ccPayload.GetInput(), cis); err != nil {
+		return ""
+	}
+	args := cis.GetChaincodeSpec().GetInput().GetArgs()
+	if len(args) == 0 {
+		return ""
+	}
+	return string(args[0])
 }
 
 // fakeGateway is a stand-in for the peer's gateway. It records the envelope it
@@ -122,6 +156,20 @@ func TestLoopbackWriteBackRecordSuccess(t *testing.T) {
 	require.NotNil(t, gateway.submitted)
 	require.NotEmpty(t, gateway.submitted.GetPreparedTransaction().GetSignature())
 	require.Equal(t, "mychannel", gateway.submitted.GetChannelId())
+}
+
+// TestLoopbackWriteBackRecordSkipsWhenAlreadyAnchored verifies the pre-check:
+// when IsAnchored reports the anchor is already on the ledger, Record returns
+// success WITHOUT submitting a redundant RecordAnchor (no ordering, no
+// committer MVCC noise).
+func TestLoopbackWriteBackRecordSkipsWhenAlreadyAnchored(t *testing.T) {
+	endorser := &fakeEndorser{alreadyThere: true, response: endorsedResponse(200)}
+	gateway := &fakeGateway{commitResult: peer.TxValidationCode_VALID}
+	wb := writeBackFixture(t, endorser, gateway)
+
+	require.NoError(t, wb.Record(context.Background(), sampleEntry()))
+	require.Zero(t, endorser.recordCalls, "must not endorse a RecordAnchor when already recorded")
+	require.Nil(t, gateway.submitted, "must not order a redundant write-back")
 }
 
 // TestLoopbackWriteBackRecordEndorseError surfaces a failed endorsement.

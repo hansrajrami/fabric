@@ -90,9 +90,24 @@ func (w *LoopbackWriteBack) Record(ctx context.Context, e *outbox.Entry) error {
 	ctx, cancel := context.WithTimeout(ctx, writeBackTimeout)
 	defer cancel()
 
+	fabricTxIDHex := hex.EncodeToString(e.FabricTxID[:])
+
+	// Skip the write-back when the anchor is already recorded on the ledger — by
+	// another anchoring peer, another relayer, or a prior attempt. This avoids
+	// submitting a redundant RecordAnchor that would only no-op (or lose an MVCC
+	// race in the same block), which keeps the extra ordering load and the
+	// committer's MVCC_READ_CONFLICT warnings off the channel. A pre-check
+	// failure is not fatal: fall through and let RecordAnchor's own idempotency
+	// handle it. It cannot eliminate the tight same-block race (two peers both
+	// see "not recorded" before either commits); that case still resolves via
+	// RecordAnchor idempotency + the MVCC_READ_CONFLICT-as-success handling below.
+	if recorded, err := w.alreadyRecorded(ctx, e.ChannelID, fabricTxIDHex); err == nil && recorded {
+		return nil
+	}
+
 	args := [][]byte{
 		[]byte("RecordAnchor"),
-		[]byte(hex.EncodeToString(e.FabricTxID[:])),
+		[]byte(fabricTxIDHex),
 		[]byte("0x" + hex.EncodeToString(e.EVMTxHash[:])),
 		[]byte(statusConfirmed),
 	}
@@ -182,6 +197,41 @@ func (w *LoopbackWriteBack) Record(ctx context.Context, e *outbox.Entry) error {
 		return fmt.Errorf("mstanchor: RecordAnchor invalidated: %s", statusResponse.GetResult())
 	}
 	return nil
+}
+
+// alreadyRecorded reports whether the anchor for fabricTxIDHex is already on the
+// channel's ledger, via a read-only IsAnchored query against the local endorser
+// (no ordering). IsAnchored is not identity-gated, so the relayer identity may
+// call it. A query error is returned to the caller, which treats it as "not
+// known to be recorded" and proceeds.
+func (w *LoopbackWriteBack) alreadyRecorded(ctx context.Context, channelID, fabricTxIDHex string) (bool, error) {
+	cis := &peer.ChaincodeInvocationSpec{
+		ChaincodeSpec: &peer.ChaincodeSpec{
+			Type:        peer.ChaincodeSpec_GOLANG,
+			ChaincodeId: &peer.ChaincodeID{Name: w.chaincode},
+			Input:       &peer.ChaincodeInput{Args: [][]byte{[]byte("IsAnchored"), []byte(fabricTxIDHex)}},
+		},
+	}
+	creator, err := w.signer.Serialize()
+	if err != nil {
+		return false, err
+	}
+	proposal, _, err := protoutil.CreateChaincodeProposal(common.HeaderType_ENDORSER_TRANSACTION, channelID, cis, creator)
+	if err != nil {
+		return false, err
+	}
+	signedProposal, err := protoutil.GetSignedProposal(proposal, w.signer)
+	if err != nil {
+		return false, err
+	}
+	resp, err := w.endorser.ProcessProposal(ctx, signedProposal)
+	if err != nil {
+		return false, err
+	}
+	if s := resp.GetResponse().GetStatus(); s < 200 || s >= 400 {
+		return false, fmt.Errorf("mstanchor: IsAnchored query failed (%d): %s", s, resp.GetResponse().GetMessage())
+	}
+	return string(resp.GetResponse().GetPayload()) == "true", nil
 }
 
 // identitySigner is a minimal Fabric signing identity over a PEM cert/key
