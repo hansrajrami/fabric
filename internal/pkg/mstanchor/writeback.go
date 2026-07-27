@@ -265,15 +265,30 @@ func newIdentitySigner(mspID, certPath, keyPath string) (*identitySigner, error)
 	if block == nil {
 		return nil, fmt.Errorf("mstanchor: write-back key is not PEM")
 	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	ecKey, err := parseECPrivateKey(block.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("mstanchor: parse write-back key: %w", err)
 	}
-	ecKey, ok := parsed.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("mstanchor: write-back key must be ECDSA, got %T", parsed)
-	}
 	return &identitySigner{creator: creator, key: ecKey}, nil
+}
+
+// parseECPrivateKey parses an ECDSA private key from DER in either PKCS#8
+// ("BEGIN PRIVATE KEY") or SEC1 ("BEGIN EC PRIVATE KEY") form. Fabric MSP
+// keystores are PKCS#8, but cryptogen, some CAs, and openssl commonly emit
+// SEC1, so accept both rather than forcing operators to convert the key.
+func parseECPrivateKey(der []byte) (*ecdsa.PrivateKey, error) {
+	if k, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		ec, ok := k.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("write-back key must be ECDSA, got %T", k)
+		}
+		return ec, nil
+	}
+	ec, err := x509.ParseECPrivateKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("write-back key is not a PKCS#8 or SEC1 ECDSA private key: %w", err)
+	}
+	return ec, nil
 }
 
 func (s *identitySigner) Serialize() ([]byte, error) { return s.creator, nil }

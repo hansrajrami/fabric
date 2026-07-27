@@ -121,6 +121,42 @@ func writeBackFixture(t *testing.T, endorser EndorserProcessor, gateway GatewayI
 	return wb
 }
 
+// TestNewIdentitySignerAcceptsKeyFormats verifies the relayer key loads whether
+// it is PKCS#8 ("BEGIN PRIVATE KEY", Fabric MSP keystores) or SEC1 ("BEGIN EC
+// PRIVATE KEY", cryptogen / openssl).
+func TestNewIdentitySignerAcceptsKeyFormats(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "mst-relayer"}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
+	require.NoError(t, err)
+	sec1, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name  string
+		block *pem.Block
+	}{
+		{"PKCS8", &pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8}},
+		{"SEC1", &pem.Block{Type: "EC PRIVATE KEY", Bytes: sec1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			certPath := filepath.Join(dir, "cert.pem")
+			keyPath := filepath.Join(dir, "key.pem")
+			require.NoError(t, os.WriteFile(certPath, certPEM, 0o600))
+			require.NoError(t, os.WriteFile(keyPath, pem.EncodeToMemory(tc.block), 0o600))
+
+			_, err := newIdentitySigner("Org1MSP", certPath, keyPath)
+			require.NoError(t, err)
+		})
+	}
+}
+
 // endorsedResponse builds a successful ProposalResponse with a non-nil
 // endorsement, which CreateSignedTx requires to assemble the envelope.
 func endorsedResponse(status int32) *peer.ProposalResponse {
